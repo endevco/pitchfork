@@ -1,6 +1,6 @@
 # Lifecycle Hooks
 
-Run custom shell commands when daemons become ready, fail, are retried, or stop.
+Run custom shell commands when daemons become ready, fail, are retried, stop, or produce specific output.
 
 ## Configuration
 
@@ -18,6 +18,7 @@ on_fail = "./scripts/cleanup.sh"
 on_retry = "echo 'retrying api server...'"
 on_stop = "./scripts/notify-stopped.sh"
 on_exit = "./scripts/cleanup.sh"
+on_output = { filter = "Server started", run = "./scripts/notify-ready.sh" }
 ```
 
 ## Hook Types
@@ -73,6 +74,35 @@ on_exit = "docker compose down --volumes"
 
 The `PITCHFORK_EXIT_CODE` and `PITCHFORK_EXIT_REASON` environment variables are available to distinguish the cause.
 
+### `on_output`
+
+Fires when the daemon writes a line to stdout or stderr that matches an optional pattern. Useful for reacting to log messages without relying on a readiness check.
+
+`on_output` takes an inline table with the following fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `run` | Yes | Shell command to execute |
+| `filter` | No | Fire only when the line **contains** this substring |
+| `regex` | No | Fire only when the line **matches** this regular expression |
+| `debounce` | No | Minimum time between firings (humantime, e.g. `"500ms"`, `"2s"`). Defaults to `"1000ms"` |
+
+`filter` and `regex` are mutually exclusive. When neither is specified the hook fires on every line of output, subject to debouncing.
+
+```toml
+[daemons.api.hooks]
+# Fire once when a specific string appears
+on_output = { filter = "Server started", run = "curl https://monitor.example.com/up" }
+
+# Fire when a line matches a regex
+on_output = { regex = "listening on port [0-9]+", run = "./scripts/register-port.sh" }
+
+# Fire on every line, but no more than once per 5 seconds
+on_output = { run = "./scripts/log-activity.sh", debounce = "5s" }
+```
+
+The matched line is available in the hook command as `$PITCHFORK_MATCHED_LINE`.
+
 ## Environment Variables
 
 All hooks receive these environment variables:
@@ -84,6 +114,7 @@ All hooks receive these environment variables:
 | `PITCHFORK_RETRY_COUNT` | Current retry attempt (0 on first run) |
 | `PITCHFORK_EXIT_CODE` | Exit code of the process (`on_fail`, `on_stop`, `on_exit`). On Unix, processes terminated by a signal (e.g. SIGTERM) have no POSIX exit code; in that case this is set to `-1`. |
 | `PITCHFORK_EXIT_REASON` | Why the daemon stopped. Typically `"stop"` (intentional stop by pitchfork) or `"fail"` (non-zero exit); `"exit"` indicates an unexpected clean exit (process quit on its own with code 0). Available in `on_stop` and `on_exit`. |
+| `PITCHFORK_MATCHED_LINE` | The raw output line that triggered the hook (`on_output` only) |
 
 Any custom `env` variables from the daemon config are also passed to hooks.
 
@@ -148,4 +179,34 @@ run = "npm run server"
 
 [daemons.api.hooks]
 on_exit = "sh -c 'echo \"Daemon exited: reason=$PITCHFORK_EXIT_REASON code=$PITCHFORK_EXIT_CODE\" >> /var/log/api-exits.log'"
+```
+
+**React to a specific log message:**
+
+```toml
+[daemons.api]
+run = "npm run server"
+
+[daemons.api.hooks]
+on_output = { filter = "Database connected", run = "curl https://monitor.example.com/db-ready" }
+```
+
+**Parse a port from startup output and register it:**
+
+```toml
+[daemons.api]
+run = "node server.js"
+
+[daemons.api.hooks]
+on_output = { regex = "listening on port [0-9]+", run = "sh -c 'echo \"$PITCHFORK_MATCHED_LINE\" | grep -o \"[0-9]*$\" | xargs register-port'" }
+```
+
+**Rate-limited activity logging:**
+
+```toml
+[daemons.worker]
+run = "python worker.py"
+
+[daemons.worker.hooks]
+on_output = { run = "sh -c 'echo \"$(date): active\" >> /var/log/worker-activity.log'", debounce = "10s" }
 ```

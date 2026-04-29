@@ -77,6 +77,40 @@
       "description": "Memory limit in human-readable format, e.g. '50MB', '1GiB', '512KB'",
       "type": "string"
     },
+    "OnOutputHook": {
+      "description": "Hook triggered when the daemon produces output matching an optional pattern.\n\nAt most one of `filter` (substring) or `regex` (regular expression) may be\nspecified.  When neither is given the hook fires on every line of output,\nsubject to debouncing.\n\n`debounce` is a humantime duration string (e.g. `\"500ms\"`, `\"2s\"`) that\ncontrols the minimum interval between successive firings. Defaults to\n`\"1000ms\"`.",
+      "type": "object",
+      "properties": {
+        "debounce": {
+          "description": "Minimum time between successive firings (humantime, e.g. `\"500ms\"`).\nDefaults to `\"1000ms\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "Fire when a line of output contains this substring",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regex": {
+          "description": "Fire when a line of output matches this regular expression",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "description": "Command to run when the output condition is met",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run"
+      ]
+    },
     "PitchforkTomlAuto": {
       "description": "Auto start/stop configuration",
       "type": "string",
@@ -316,6 +350,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "on_output": {
+          "description": "Hook triggered when the daemon produces matching output",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnOutputHook"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "on_ready": {

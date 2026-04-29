@@ -200,6 +200,7 @@ impl Add {
                 on_retry: self.on_retry.clone(),
                 on_stop: self.on_stop.clone(),
                 on_exit: self.on_exit.clone(),
+                on_output: None,
             })
         } else {
             None

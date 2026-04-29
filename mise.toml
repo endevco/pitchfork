@@ -1,13 +1,15 @@
 [env]
 _.path = "target/debug"
 
-[tasks.ci]
-depends = ["lint", "build", "docs:build"]
+[tasks.test]
 run = [
   "cargo nextest run",
   "git submodule update --init --recursive",
   "test/bats/bin/bats test",
 ]
+
+[tasks.ci]
+depends = ["lint", "build", "docs:build", "test"]
 
 [tasks."docs:build"]
 dir = "docs"

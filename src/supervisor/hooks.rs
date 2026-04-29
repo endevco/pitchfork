@@ -124,3 +124,55 @@ pub(crate) async fn fire_hook(
     tasks.retain(|h| !h.is_finished());
     tasks.push(handle);
 }
+
+/// Fire the `on_output` hook for a daemon as a fire-and-forget task.
+///
+/// `cmd` is the hook command string resolved at call time (from `on_output.run`).
+/// `matched_line` is exposed to the command via `PITCHFORK_MATCHED_LINE`.
+pub(crate) async fn fire_output_hook(
+    daemon_id: DaemonId,
+    daemon_dir: PathBuf,
+    retry_count: u32,
+    daemon_env: Option<IndexMap<String, String>>,
+    cmd: String,
+    matched_line: String,
+) {
+    let handle = tokio::spawn(async move {
+        info!("firing on_output hook for daemon {daemon_id}: {cmd}");
+
+        let mut command = Shell::default_for_platform().command(&cmd);
+        command
+            .current_dir(&daemon_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        if let Some(ref path) = *env::ORIGINAL_PATH {
+            command.env("PATH", path);
+        }
+
+        if let Some(ref env_vars) = daemon_env {
+            command.envs(env_vars);
+        }
+
+        command
+            .env("PITCHFORK_DAEMON_ID", daemon_id.qualified())
+            .env("PITCHFORK_DAEMON_NAMESPACE", daemon_id.namespace())
+            .env("PITCHFORK_RETRY_COUNT", retry_count.to_string())
+            .env("PITCHFORK_MATCHED_LINE", &matched_line);
+
+        match command.status().await {
+            Ok(status) => {
+                if !status.success() {
+                    warn!("on_output hook for daemon {daemon_id} exited with {status}");
+                }
+            }
+            Err(e) => {
+                error!("failed to execute on_output hook for daemon {daemon_id}: {e}");
+            }
+        }
+    });
+
+    let mut tasks = SUPERVISOR.hook_tasks.lock().await;
+    tasks.retain(|h| !h.is_finished());
+    tasks.push(handle);
+}

@@ -1127,6 +1127,67 @@ impl PitchforkToml {
     }
 }
 
+/// Hook triggered when the daemon produces output matching an optional pattern.
+///
+/// At most one of `filter` (substring) or `regex` (regular expression) may be
+/// specified.  When neither is given the hook fires on every line of output,
+/// subject to debouncing.
+///
+/// `debounce` is a humantime duration string (e.g. `"500ms"`, `"2s"`) that
+/// controls the minimum interval between successive firings. Defaults to
+/// `"1000ms"`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct OnOutputHook {
+    /// Command to run when the output condition is met
+    pub run: String,
+    /// Fire when a line of output contains this substring
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filter: Option<String>,
+    /// Fire when a line of output matches this regular expression
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub regex: Option<String>,
+    /// Minimum time between successive firings (humantime, e.g. `"500ms"`).
+    /// Defaults to `"1000ms"`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub debounce: Option<String>,
+}
+
+impl OnOutputHook {
+    /// Validate configuration: `filter` and `regex` are mutually exclusive,
+    /// `regex` must be a valid regular expression, and `debounce` (if present)
+    /// must be a valid humantime duration.
+    pub fn validate(&self, daemon_name: &str) -> crate::Result<()> {
+        if self.filter.is_some() && self.regex.is_some() {
+            miette::bail!(
+                "daemon {daemon_name}: on_output.filter and on_output.regex are mutually exclusive"
+            );
+        }
+        if let Some(ref pattern) = self.regex {
+            regex::Regex::new(pattern).map_err(|e| {
+                miette::miette!(
+                    "daemon {daemon_name}: on_output.regex {pattern:?} is not a valid regular expression: {e}"
+                )
+            })?;
+        }
+        if let Some(ref d) = self.debounce {
+            humantime::parse_duration(d).map_err(|e| {
+                miette::miette!(
+                    "daemon {daemon_name}: on_output.debounce {d:?} is not a valid duration: {e}"
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Resolved debounce duration. Falls back to 1 second.
+    pub fn debounce_duration(&self) -> std::time::Duration {
+        self.debounce
+            .as_deref()
+            .and_then(|s| humantime::parse_duration(s).ok())
+            .unwrap_or(std::time::Duration::from_millis(1000))
+    }
+}
+
 /// Lifecycle hooks for a daemon
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct PitchforkTomlHooks {
@@ -1145,6 +1206,9 @@ pub struct PitchforkTomlHooks {
     /// Command to run on any daemon termination (clean exit, crash, or stop)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_exit: Option<String>,
+    /// Hook triggered when the daemon produces matching output
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_output: Option<OnOutputHook>,
 }
 
 /// Configuration for a single daemon (internal representation with DaemonId)
@@ -1296,6 +1360,7 @@ impl PitchforkTomlDaemon {
             user: self.user.clone(),
             memory_limit: self.memory_limit,
             cpu_limit: self.cpu_limit,
+            on_output_hook: self.hooks.as_ref().and_then(|h| h.on_output.clone()),
         }
     }
 }

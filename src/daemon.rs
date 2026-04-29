@@ -193,6 +193,9 @@ pub struct RunOptions {
     /// CPU usage limit as a percentage (e.g. 80 for 80%, 200 for 2 cores)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cpu_limit: Option<CpuLimit>,
+    /// Hook triggered when the daemon produces matching output
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_output_hook: Option<crate::pitchfork_toml::OnOutputHook>,
 }
 
 impl Default for Daemon {
@@ -243,6 +246,17 @@ impl Daemon {
     /// Carries over all configuration fields from the daemon state.
     /// Callers can override specific fields on the returned value.
     pub fn to_run_options(&self, cmd: Vec<String>) -> RunOptions {
+        // Re-read on_output_hook from fresh config so restarts (retry, watch,
+        // cron) always pick up the current hook configuration.
+        let on_output_hook = crate::pitchfork_toml::PitchforkToml::all_merged()
+            .ok()
+            .and_then(|pt| {
+                pt.daemons
+                    .get(&self.id)
+                    .and_then(|d| d.hooks.as_ref())
+                    .and_then(|h| h.on_output.clone())
+            });
+
         RunOptions {
             id: self.id.clone(),
             cmd,
@@ -274,6 +288,7 @@ impl Daemon {
             user: self.user.clone(),
             memory_limit: self.memory_limit,
             cpu_limit: self.cpu_limit,
+            on_output_hook,
         }
     }
 }
@@ -311,6 +326,7 @@ impl Default for RunOptions {
             user: None,
             memory_limit: None,
             cpu_limit: None,
+            on_output_hook: None,
         }
     }
 }

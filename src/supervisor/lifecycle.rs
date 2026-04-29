@@ -2,7 +2,7 @@
 //!
 //! Contains the core `run()`, `run_once()`, and `stop()` methods for daemon process management.
 
-use super::hooks::{HookType, fire_hook};
+use super::hooks::{self, HookType, fire_hook};
 use super::{SUPERVISOR, Supervisor};
 use crate::daemon::RunOptions;
 use crate::daemon_id::DaemonId;
@@ -385,6 +385,7 @@ impl Supervisor {
         let hook_retry_count = opts.retry_count;
         let hook_retry = opts.retry;
         let hook_daemon_env = opts.env.clone();
+        let on_output_hook = opts.on_output_hook.clone();
         // Whether this daemon has any port-related config — used to skip the
         // active_port detection task for daemons that never bind a port (e.g. `sleep 60`).
         // When the proxy is enabled, only detect active_port for daemons that are
@@ -435,6 +436,32 @@ impl Supervisor {
             let ready_pattern = ready_output.as_ref().and_then(|p| get_or_compile_regex(p));
             // Track whether we've already spawned the active_port detection task
             let mut active_port_spawned = false;
+
+            // Validate on_output config early; discard the hook on any error so
+            // a bad regex does not silently fall through to the (None, None) => true
+            // match arm and fire on every line.
+            let on_output_hook = match on_output_hook {
+                Some(ref hook) => match hook.validate(id.name()) {
+                    Ok(()) => on_output_hook,
+                    Err(e) => {
+                        error!("{e}");
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            // Compile the regex pattern after validation so we only attempt this
+            // when the hook is known-good (validate() already checked the syntax).
+            let on_output_pattern: Option<regex::Regex> = on_output_hook
+                .as_ref()
+                .and_then(|h| h.regex.as_deref().and_then(get_or_compile_regex));
+            let on_output_debounce = on_output_hook
+                .as_ref()
+                .map(|h| h.debounce_duration())
+                .unwrap_or(Duration::from_millis(1000));
+            // Last time the on_output hook fired; None means it has never fired.
+            let mut on_output_last_fired: Option<std::time::Instant> = None;
 
             let mut delay_timer =
                 ready_delay.map(|secs| Box::pin(time::sleep(Duration::from_secs(secs))));
@@ -564,6 +591,23 @@ impl Supervisor {
                                 detect_and_store_active_port(id.clone(), daemon_pid);
                             }
                         }
+
+                        // Check on_output hook
+                        if let Some(ref hook) = on_output_hook {
+                            let matched = match (&hook.filter, &on_output_pattern) {
+                                (Some(substr), _) => line.contains(substr.as_str()),
+                                (None, Some(re)) => re.is_match(&line),
+                                (None, None) => true,
+                            };
+                            if matched {
+                                let now = std::time::Instant::now();
+                                let elapsed = on_output_last_fired.map(|t| now.duration_since(t));
+                                if elapsed.is_none_or(|e| e >= on_output_debounce) {
+                                    on_output_last_fired = Some(now);
+                                    hooks::fire_output_hook(id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), hook.run.clone(), line.clone()).await;
+                                }
+                            }
+                        }
                     }
                     Ok(Some(line)) = stderr.next_line() => {
                         let formatted = format_line(line.clone());
@@ -586,6 +630,23 @@ impl Supervisor {
                             if !active_port_spawned && has_port_config {
                                 active_port_spawned = true;
                                 detect_and_store_active_port(id.clone(), daemon_pid);
+                            }
+                        }
+
+                        // Check on_output hook
+                        if let Some(ref hook) = on_output_hook {
+                            let matched = match (&hook.filter, &on_output_pattern) {
+                                (Some(substr), _) => line.contains(substr.as_str()),
+                                (None, Some(re)) => re.is_match(&line),
+                                (None, None) => true,
+                            };
+                            if matched {
+                                let now = std::time::Instant::now();
+                                let elapsed = on_output_last_fired.map(|t| now.duration_since(t));
+                                if elapsed.is_none_or(|e| e >= on_output_debounce) {
+                                    on_output_last_fired = Some(now);
+                                    hooks::fire_output_hook(id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), hook.run.clone(), line.clone()).await;
+                                }
                             }
                         }
                     },
