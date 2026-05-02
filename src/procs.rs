@@ -68,14 +68,14 @@ impl Procs {
         children
     }
 
-    pub async fn kill_process_group_async(&self, pid: u32) -> Result<bool> {
-        tokio::task::spawn_blocking(move || PROCS.kill_process_group(pid))
+    pub async fn kill_process_group_async(&self, pid: u32, stop_signal: i32) -> Result<bool> {
+        tokio::task::spawn_blocking(move || PROCS.kill_process_group(pid, stop_signal))
             .await
             .into_diagnostic()?
     }
 
     /// Kill an entire process group with graceful shutdown strategy:
-    /// 1. Send SIGTERM to the process group (-pgid) and wait up to ~3s
+    /// 1. Send the configured stop signal to the process group (-pgid) and wait up to ~3s
     /// 2. If any processes remain, send SIGKILL to the group
     ///
     /// Since daemons are spawned with setsid(), the daemon PID == PGID,
@@ -83,16 +83,17 @@ impl Procs {
     ///
     /// Returns `Err` if the signal could not be sent (e.g. permission denied).
     #[cfg(unix)]
-    fn kill_process_group(&self, pid: u32) -> Result<bool> {
+    fn kill_process_group(&self, pid: u32, stop_signal: i32) -> Result<bool> {
         let pgid = pid as i32;
+        let signal_name = signal_name(stop_signal);
 
-        debug!("killing process group {pgid}");
+        debug!("killing process group {pgid} with {signal_name}");
 
-        // Send SIGTERM to the entire process group.
+        // Send the stop signal to the entire process group.
         // killpg sends to all processes in the group atomically.
         // We intentionally skip the zombie check here because the leader may be
         // a zombie while children in the group are still running.
-        let ret = unsafe { libc::killpg(pgid, libc::SIGTERM) };
+        let ret = unsafe { libc::killpg(pgid, stop_signal) };
         if ret == -1 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::ESRCH) {
@@ -101,10 +102,10 @@ impl Procs {
             }
             if err.raw_os_error() == Some(libc::EPERM) {
                 return Err(miette::miette!(
-                    "failed to send SIGTERM to process group {pgid}: permission denied"
+                    "failed to send {signal_name} to process group {pgid}: permission denied"
                 ));
             }
-            warn!("failed to send SIGTERM to process group {pgid}: {err}");
+            warn!("failed to send {signal_name} to process group {pgid}: {err}");
         }
 
         // Wait for graceful shutdown: fast initial check then slower polling.
@@ -129,14 +130,14 @@ impl Procs {
             self.refresh_pids(&[pid]);
             elapsed_ms += sleep_duration.as_millis() as u64;
             if self.is_terminated_or_zombie(sysinfo::Pid::from_u32(pid)) {
-                debug!("process group {pgid} terminated after SIGTERM ({elapsed_ms} ms)",);
+                debug!("process group {pgid} terminated after {signal_name} ({elapsed_ms} ms)",);
                 return Ok(true);
             }
         }
 
         // SIGKILL the entire process group as last resort
         warn!(
-            "process group {pgid} did not respond to SIGTERM after {}ms, sending SIGKILL",
+            "process group {pgid} did not respond to {signal_name} after {}ms, sending SIGKILL",
             stop_timeout.as_millis()
         );
         let ret = unsafe { libc::killpg(pgid, libc::SIGKILL) };
@@ -153,19 +154,19 @@ impl Procs {
     }
 
     #[cfg(not(unix))]
-    fn kill_process_group(&self, pid: u32) -> Result<bool> {
+    fn kill_process_group(&self, pid: u32, _stop_signal: i32) -> Result<bool> {
         // On non-unix platforms, fall back to single-process kill
         self.kill(pid)
     }
 
-    pub async fn kill_async(&self, pid: u32) -> Result<bool> {
-        tokio::task::spawn_blocking(move || PROCS.kill(pid))
+    pub async fn kill_async(&self, pid: u32, stop_signal: i32) -> Result<bool> {
+        tokio::task::spawn_blocking(move || PROCS.kill(pid, stop_signal))
             .await
             .into_diagnostic()?
     }
 
     /// Kill a process with graceful shutdown strategy:
-    /// 1. Send SIGTERM and wait up to ~3s (10ms intervals for first 100ms, then 50ms intervals)
+    /// 1. Send the configured stop signal and wait up to ~3s (10ms intervals for first 100ms, then 50ms intervals)
     /// 2. If still running, send SIGKILL to force termination
     ///
     /// This ensures fast-exiting processes don't wait unnecessarily,
@@ -173,7 +174,7 @@ impl Procs {
     ///
     /// Returns `Err` if the signal could not be sent (e.g. permission denied
     /// when targeting a process owned by another user/root).
-    fn kill(&self, pid: u32) -> Result<bool> {
+    fn kill(&self, pid: u32, stop_signal: i32) -> Result<bool> {
         let sysinfo_pid = sysinfo::Pid::from_u32(pid);
 
         // Check if process exists or is a zombie (already terminated but not reaped)
@@ -194,11 +195,12 @@ impl Procs {
 
         #[cfg(unix)]
         {
-            // Send SIGTERM for graceful shutdown using libc::kill directly
+            let signal_name = signal_name(stop_signal);
+            // Send stop signal for graceful shutdown using libc::kill directly
             // so we can distinguish EPERM (permission denied) from ESRCH
             // (process already gone — possible in a narrow race window).
-            debug!("sending SIGTERM to process {pid}");
-            let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            debug!("sending {signal_name} to process {pid}");
+            let ret = unsafe { libc::kill(pid as i32, stop_signal) };
             if ret == -1 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::ESRCH) {
@@ -207,11 +209,11 @@ impl Procs {
                 }
                 if err.raw_os_error() == Some(libc::EPERM) {
                     return Err(miette::miette!(
-                        "failed to send SIGTERM to process {pid}: permission denied"
+                        "failed to send {signal_name} to process {pid}: permission denied"
                     ));
                 }
                 return Err(miette::miette!(
-                    "failed to send SIGTERM to process {pid}: {err}"
+                    "failed to send {signal_name} to process {pid}: {err}"
                 ));
             }
 
@@ -231,7 +233,7 @@ impl Procs {
                 self.refresh_pids(&[pid]);
                 if self.is_terminated_or_zombie(sysinfo_pid) {
                     debug!(
-                        "process {pid} terminated after SIGTERM ({} ms)",
+                        "process {pid} terminated after {signal_name} ({} ms)",
                         (i + 1) * fast_ms as usize
                     );
                     return Ok(true);
@@ -244,7 +246,7 @@ impl Procs {
                 self.refresh_pids(&[pid]);
                 if self.is_terminated_or_zombie(sysinfo_pid) {
                     debug!(
-                        "process {pid} terminated after SIGTERM ({} ms)",
+                        "process {pid} terminated after {signal_name} ({} ms)",
                         fast_total_ms + (i + 1) as u64 * slow_ms
                     );
                     return Ok(true);
@@ -253,7 +255,7 @@ impl Procs {
 
             // SIGKILL as last resort after stop_timeout
             warn!(
-                "process {pid} did not respond to SIGTERM after {}ms, sending SIGKILL",
+                "process {pid} did not respond to {signal_name} after {}ms, sending SIGKILL",
                 stop_timeout.as_millis()
             );
             let ret = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
@@ -544,5 +546,19 @@ fn format_bytes_per_sec(bytes: u64) -> String {
         format!("{:.1}MB/s", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.1}GB/s", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(unix)]
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGKILL => "SIGKILL",
+        _ => "UNKNOWN",
     }
 }

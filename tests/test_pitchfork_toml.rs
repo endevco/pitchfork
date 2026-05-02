@@ -88,7 +88,7 @@ fn test_write_pitchfork_toml() -> Result<()> {
         DaemonId::try_new(&toml_ns, "test_daemon").unwrap(),
         pitchfork_toml::PitchforkTomlDaemon {
             run: "echo 'test'".to_string(),
-            retry: pitchfork_toml::Retry::from(5),
+            retry: pitchfork_toml::Retry(5),
             port_bump_attempts: 10,
             path: Some(toml_path.clone()),
             ..pitchfork_toml::PitchforkTomlDaemon::default()

@@ -4,82 +4,13 @@ use crate::settings::SettingsPartial;
 use crate::settings::settings;
 use crate::state_file::StateFile;
 use crate::{Result, env};
-use humanbyte::HumanByte;
 use indexmap::IndexMap;
 use miette::Context;
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
-/// A byte-size type that accepts human-readable strings like "50MB", "1GiB", etc.
-///
-/// Backed by `u64` and uses the `humanbyte` crate for parsing and display.
-/// Used for `memory_limit` configuration in daemon definitions.
-#[derive(Clone, Copy, PartialEq, Eq, HumanByte)]
-pub struct MemoryLimit(pub u64);
-
-impl JsonSchema for MemoryLimit {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("MemoryLimit")
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "description": "Memory limit in human-readable format, e.g. '50MB', '1GiB', '512KB'"
-        })
-    }
-}
-
-/// A CPU usage limit expressed as a percentage (e.g. `80.0` means 80% of one CPU core).
-///
-/// The supervisor periodically checks each daemon's CPU usage and kills processes
-/// that exceed this limit. Values above 100% are valid on multi-core systems
-/// (e.g. `200.0` allows up to 2 full cores).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CpuLimit(pub f32);
-
-impl std::fmt::Display for CpuLimit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}%", self.0)
-    }
-}
-
-impl Serialize for CpuLimit {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_f64(self.0 as f64)
-    }
-}
-
-impl<'de> Deserialize<'de> for CpuLimit {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let v = f64::deserialize(deserializer)?;
-        if v <= 0.0 {
-            return Err(serde::de::Error::custom("cpu_limit must be positive"));
-        }
-        Ok(CpuLimit(v as f32))
-    }
-}
-
-impl JsonSchema for CpuLimit {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("CpuLimit")
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "number",
-            "description": "CPU usage limit as a percentage (e.g. 80 for 80% of one core, 200 for 2 cores)",
-            "exclusiveMinimum": 0
-        })
-    }
-}
+// Re-export config value types so existing `use crate::pitchfork_toml::X` paths keep working.
+pub use crate::config_types::{CpuLimit, MemoryLimit, Retry, StopSignal};
 
 /// Raw slug entry as read from TOML (uses String for dir path).
 /// Format in global config:
@@ -177,6 +108,9 @@ struct PitchforkTomlDaemonRaw {
     /// CPU usage limit as a percentage (e.g. 80 for 80%, 200 for 2 cores)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cpu_limit: Option<CpuLimit>,
+    /// Unix signal to send for graceful shutdown (default: SIGTERM)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stop_signal: Option<StopSignal>,
 }
 
 /// Configuration schema for pitchfork.toml daemon supervisor configuration files.
@@ -883,6 +817,7 @@ impl PitchforkToml {
                 user: raw_daemon.user,
                 memory_limit: raw_daemon.memory_limit,
                 cpu_limit: raw_daemon.cpu_limit,
+                stop_signal: raw_daemon.stop_signal,
                 path: Some(path.to_path_buf()),
             };
             pt.daemons.insert(id, daemon);
@@ -999,6 +934,7 @@ impl PitchforkToml {
                     user: daemon.user.clone(),
                     memory_limit: daemon.memory_limit,
                     cpu_limit: daemon.cpu_limit,
+                    stop_signal: daemon.stop_signal,
                 };
                 raw.daemons.insert(id.name().to_string(), raw_daemon);
             }
@@ -1278,6 +1214,9 @@ pub struct PitchforkTomlDaemon {
     /// CPU usage limit as a percentage (e.g. 80 for 80%, 200 for 2 cores).
     /// The supervisor periodically monitors CPU usage and kills the process if it exceeds the limit.
     pub cpu_limit: Option<CpuLimit>,
+    /// Unix signal to send for graceful shutdown. Defaults to SIGTERM if unset.
+    /// Useful for daemons that expect SIGINT (ctrl+c) for graceful termination.
+    pub stop_signal: Option<StopSignal>,
     #[schemars(skip)]
     pub path: Option<PathBuf>,
 }
@@ -1308,6 +1247,7 @@ impl Default for PitchforkTomlDaemon {
             user: None,
             memory_limit: None,
             cpu_limit: None,
+            stop_signal: None,
             path: None,
         }
     }
@@ -1360,6 +1300,7 @@ impl PitchforkTomlDaemon {
             user: self.user.clone(),
             memory_limit: self.memory_limit,
             cpu_limit: self.cpu_limit,
+            stop_signal: self.stop_signal,
             on_output_hook: self.hooks.as_ref().and_then(|h| h.on_output.clone()),
         }
     }
@@ -1429,113 +1370,6 @@ pub enum CronRetrigger {
 pub enum PitchforkTomlAuto {
     Start,
     Stop,
-}
-
-/// Retry configuration that accepts either a boolean or a count.
-/// - `true` means retry indefinitely (u32::MAX)
-/// - `false` or `0` means no retries
-/// - A number means retry that many times
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-pub struct Retry(pub u32);
-
-impl std::fmt::Display for Retry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_infinite() {
-            write!(f, "infinite")
-        } else {
-            write!(f, "{}", self.0)
-        }
-    }
-}
-
-impl Retry {
-    pub const INFINITE: Retry = Retry(u32::MAX);
-
-    pub fn count(&self) -> u32 {
-        self.0
-    }
-
-    pub fn is_infinite(&self) -> bool {
-        self.0 == u32::MAX
-    }
-}
-
-impl From<u32> for Retry {
-    fn from(n: u32) -> Self {
-        Retry(n)
-    }
-}
-
-impl From<bool> for Retry {
-    fn from(b: bool) -> Self {
-        if b { Retry::INFINITE } else { Retry(0) }
-    }
-}
-
-impl Serialize for Retry {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Serialize infinite as true, otherwise as number
-        if self.is_infinite() {
-            serializer.serialize_bool(true)
-        } else {
-            serializer.serialize_u32(self.0)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Retry {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use serde::de::{self, Visitor};
-
-        struct RetryVisitor;
-
-        impl Visitor<'_> for RetryVisitor {
-            type Value = Retry;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a boolean or non-negative integer")
-            }
-
-            fn visit_bool<E>(self, v: bool) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(Retry::from(v))
-            }
-
-            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v < 0 {
-                    Err(de::Error::custom("retry count cannot be negative"))
-                } else if v > u32::MAX as i64 {
-                    Ok(Retry::INFINITE)
-                } else {
-                    Ok(Retry(v as u32))
-                }
-            }
-
-            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v > u32::MAX as u64 {
-                    Ok(Retry::INFINITE)
-                } else {
-                    Ok(Retry(v as u32))
-                }
-            }
-        }
-
-        deserializer.deserialize_any(RetryVisitor)
-    }
 }
 
 #[cfg(test)]

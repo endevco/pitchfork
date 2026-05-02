@@ -279,6 +279,7 @@ mod tests {
             user: None,
             memory_limit: None,
             cpu_limit: None,
+            stop_signal: None,
         }
     }
 

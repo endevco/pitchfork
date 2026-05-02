@@ -370,6 +370,7 @@ impl Supervisor {
                         o.user = opts.user.clone();
                         o.memory_limit = opts.memory_limit;
                         o.cpu_limit = opts.cpu_limit;
+                        o.stop_signal = opts.stop_signal;
                     })
                     .build(),
             )
@@ -1012,7 +1013,8 @@ impl Supervisor {
 
                     // Kill the entire process group atomically (daemon PID == PGID
                     // because we called setsid() at spawn time)
-                    if let Err(e) = PROCS.kill_process_group_async(pid).await {
+                    let stop_signal: i32 = daemon.stop_signal.unwrap_or_default().into();
+                    if let Err(e) = PROCS.kill_process_group_async(pid, stop_signal).await {
                         debug!("failed to kill pid {pid}: {e}");
                         // Check if the process is actually stopped despite the error
                         PROCS.refresh_processes();

@@ -11,6 +11,7 @@ use crate::pitchfork_toml::CpuLimit;
 use crate::pitchfork_toml::CronRetrigger;
 use crate::pitchfork_toml::MemoryLimit;
 use crate::pitchfork_toml::PitchforkToml;
+use crate::pitchfork_toml::StopSignal;
 use crate::pitchfork_toml::WatchMode;
 use crate::procs::PROCS;
 use crate::settings::settings;
@@ -64,6 +65,8 @@ pub(crate) struct UpsertDaemonOpts {
     pub memory_limit: Option<MemoryLimit>,
     /// CPU usage limit as a percentage
     pub cpu_limit: Option<CpuLimit>,
+    /// Unix signal to send for graceful shutdown
+    pub stop_signal: Option<StopSignal>,
 }
 
 /// Builder for UpsertDaemonOpts - ensures daemon ID is always provided.
@@ -120,6 +123,7 @@ impl UpsertDaemonOpts {
                 user: None,
                 memory_limit: None,
                 cpu_limit: None,
+                stop_signal: None,
             },
         }
     }
@@ -230,6 +234,7 @@ impl Supervisor {
             slug: opts.slug.or(existing.and_then(|d| d.slug.clone())),
             memory_limit: opts.memory_limit.or(existing.and_then(|d| d.memory_limit)),
             cpu_limit: opts.cpu_limit.or(existing.and_then(|d| d.cpu_limit)),
+            stop_signal: opts.stop_signal.or(existing.and_then(|d| d.stop_signal)),
         };
         state_file.daemons.insert(opts.id.clone(), daemon.clone());
         if let Err(err) = state_file.write() {

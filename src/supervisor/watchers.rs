@@ -293,7 +293,13 @@ impl Supervisor {
     /// the retry checker to restart the daemon if `retry` is configured.
     async fn stop_for_resource_violation(&self, id: &DaemonId, pid: u32) {
         info!("killing daemon {id} (pid {pid}) due to resource limit violation");
-        if let Err(e) = PROCS.kill_process_group_async(pid).await {
+        let stop_signal: i32 = self
+            .get_daemon(id)
+            .await
+            .and_then(|d| d.stop_signal)
+            .unwrap_or_default()
+            .into();
+        if let Err(e) = PROCS.kill_process_group_async(pid, stop_signal).await {
             error!("failed to kill daemon {id} (pid {pid}) after resource violation: {e}");
         }
     }

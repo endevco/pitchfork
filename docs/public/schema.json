@@ -309,6 +309,17 @@
             "exec node server.js"
           ]
         },
+        "stop_signal": {
+          "description": "Unix signal to send for graceful shutdown. Defaults to SIGTERM if unset.\nUseful for daemons that expect SIGINT (ctrl+c) for graceful termination.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopSignal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "user": {
           "description": "Unix user to run this daemon as. Overrides `settings.supervisor.user` when set.",
           "type": [
@@ -387,7 +398,7 @@
       }
     },
     "Retry": {
-      "description": "Retry configuration that accepts either a boolean or a count.\n- `true` means retry indefinitely (u32::MAX)\n- `false` or `0` means no retries\n- A number means retry that many times",
+      "description": "Retry configuration: `true` = indefinite, `false`/`0` = none, number = count.",
       "type": "integer",
       "format": "uint32",
       "minimum": 0
@@ -774,6 +785,18 @@
           ]
         }
       }
+    },
+    "StopSignal": {
+      "description": "Unix signal for graceful shutdown (e.g. 'SIGTERM', 'SIGINT', 'SIGHUP')",
+      "type": "string",
+      "enum": [
+        "SIGTERM",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGHUP",
+        "SIGUSR1",
+        "SIGUSR2"
+      ]
     },
     "WatchMode": {
       "description": "File watch backend mode for daemon `watch` patterns.",

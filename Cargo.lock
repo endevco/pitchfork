@@ -838,6 +838,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.117",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -2770,6 +2771,7 @@ dependencies = [
  "console",
  "cron",
  "crossterm",
+ "derive_more",
  "dirs",
  "duct",
  "exec",

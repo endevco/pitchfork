@@ -1,6 +1,6 @@
 use crate::daemon_id::DaemonId;
 use crate::daemon_status::DaemonStatus;
-use crate::pitchfork_toml::{CpuLimit, CronRetrigger, MemoryLimit, WatchMode};
+use crate::pitchfork_toml::{CpuLimit, CronRetrigger, MemoryLimit, StopSignal, WatchMode};
 use indexmap::IndexMap;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -139,6 +139,9 @@ pub struct Daemon {
     /// CPU usage limit as a percentage (e.g. 80 for 80%, 200 for 2 cores)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cpu_limit: Option<CpuLimit>,
+    /// Unix signal to send for graceful shutdown (default: SIGTERM)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stop_signal: Option<StopSignal>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -193,6 +196,9 @@ pub struct RunOptions {
     /// CPU usage limit as a percentage (e.g. 80 for 80%, 200 for 2 cores)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cpu_limit: Option<CpuLimit>,
+    /// Unix signal to send for graceful shutdown (default: SIGTERM)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stop_signal: Option<StopSignal>,
     /// Hook triggered when the daemon produces matching output
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_output_hook: Option<crate::pitchfork_toml::OnOutputHook>,
@@ -236,6 +242,7 @@ impl Default for Daemon {
             user: None,
             memory_limit: None,
             cpu_limit: None,
+            stop_signal: None,
         }
     }
 }
@@ -288,6 +295,7 @@ impl Daemon {
             user: self.user.clone(),
             memory_limit: self.memory_limit,
             cpu_limit: self.cpu_limit,
+            stop_signal: self.stop_signal,
             on_output_hook,
         }
     }
@@ -326,6 +334,7 @@ impl Default for RunOptions {
             user: None,
             memory_limit: None,
             cpu_limit: None,
+            stop_signal: None,
             on_output_hook: None,
         }
     }

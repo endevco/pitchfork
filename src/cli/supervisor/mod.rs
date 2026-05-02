@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::daemon_id::DaemonId;
 use crate::env;
+use crate::pitchfork_toml::StopSignal;
 use crate::procs::PROCS;
 use crate::state_file::StateFile;
 
@@ -54,7 +55,10 @@ pub async fn kill_or_stop(existing_pid: u32, force: bool) -> Result<KillOrStopOu
     if PROCS.is_running(existing_pid) {
         if force {
             debug!("killing pid {existing_pid}");
-            match PROCS.kill_async(existing_pid).await {
+            match PROCS
+                .kill_async(existing_pid, StopSignal::default().into())
+                .await
+            {
                 Ok(true) => Ok(KillOrStopOutcome::Killed),
                 Ok(false) => Ok(KillOrStopOutcome::AlreadyDead),
                 Err(e) => Err(miette::miette!("{e}. Try rerun with sudo.")),

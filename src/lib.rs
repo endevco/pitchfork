@@ -3,6 +3,7 @@ extern crate log;
 
 pub mod boot_manager;
 pub mod cli;
+pub mod config_types;
 pub mod daemon;
 pub mod daemon_id;
 pub mod daemon_list;
