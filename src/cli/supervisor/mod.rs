@@ -56,7 +56,7 @@ pub async fn kill_or_stop(existing_pid: u32, force: bool) -> Result<KillOrStopOu
         if force {
             debug!("killing pid {existing_pid}");
             match PROCS
-                .kill_async(existing_pid, StopSignal::default().into())
+                .kill_async(existing_pid, StopSignal::default().into(), None)
                 .await
             {
                 Ok(true) => Ok(KillOrStopOutcome::Killed),

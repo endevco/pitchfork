@@ -1,9 +1,15 @@
 [daemons.docs]
 run = "mise run -q docs"
 auto = ["start", "stop"]
+retry = 0
 ready_output = "http://localhost:"
 expected_port = [5173]
 auto_bump_port = true
+port_bump_attempts = 10
+
+[daemons.docs.port]
+expect = [5173]
+bump = 10
 
 
 [settings.proxy]

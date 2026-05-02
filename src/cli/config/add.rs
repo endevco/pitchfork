@@ -3,7 +3,7 @@ use crate::daemon_id::DaemonId;
 use crate::env;
 use crate::pitchfork_toml::{
     CronRetrigger, PitchforkToml, PitchforkTomlAuto, PitchforkTomlCron, PitchforkTomlDaemon,
-    PitchforkTomlHooks, Retry, namespace_from_path,
+    PitchforkTomlHooks, PortBump, PortConfig, Retry, namespace_from_path,
 };
 use crate::settings::settings;
 use indexmap::IndexMap;
@@ -85,8 +85,8 @@ pub struct Add {
     #[clap(long = "expected-port", value_delimiter = ',')]
     expected_port: Vec<u16>,
     /// Automatically find an available port if the expected port is in use
-    #[clap(long)]
-    auto_bump_port: bool,
+    #[clap(long, num_args = 0..=1, value_name = "[BUMP]")]
+    bump: Option<Option<u32>>,
     /// Daemon dependencies that must start first (can be specified multiple times)
     #[clap(long = "depends")]
     depends: Vec<String>,
@@ -249,10 +249,15 @@ impl Add {
                 ready_http: self.ready_http.clone(),
                 ready_port: self.ready_port,
                 ready_cmd: self.ready_cmd.clone(),
-                expected_port: self.expected_port.clone(),
-                auto_bump_port: self.auto_bump_port,
-                port_bump_attempts: u32::try_from(settings().supervisor.port_bump_attempts)
-                    .unwrap_or(10),
+                port: {
+                    let expect = self.expected_port.clone();
+                    let bump = match self.bump {
+                        None => PortBump(0),
+                        Some(None) => PortBump(settings().default_port_bump_attempts()),
+                        Some(Some(n)) => PortBump(n),
+                    };
+                    PortConfig::from_parts(expect, bump)
+                },
                 boot_start,
                 depends: {
                     let namespace = daemon_id.namespace().to_string();

@@ -2,6 +2,7 @@ use crate::cli::logs::print_startup_logs;
 use crate::ipc::batch::StartOptions;
 use crate::ipc::client::IpcClient;
 use crate::pitchfork_toml::PitchforkToml;
+use crate::settings::settings;
 use crate::{Result, env};
 use miette::bail;
 
@@ -60,8 +61,8 @@ pub struct Run {
     #[clap(long = "expected-port", value_delimiter = ',')]
     expected_port: Vec<u16>,
     /// Automatically find an available port if the expected port is in use
-    #[clap(long)]
-    auto_bump_port: bool,
+    #[clap(long, num_args = 0..=1, value_name = "[BUMP]")]
+    bump: Option<Option<u32>>,
     /// Shell command to poll for readiness (exit code 0 = ready)
     #[clap(long)]
     cmd: Option<String>,
@@ -87,9 +88,14 @@ impl Run {
             port: self.port,
             cmd: self.cmd.clone(),
             expected_port: (!self.expected_port.is_empty()).then_some(self.expected_port.clone()),
-            auto_bump_port: self.auto_bump_port,
-            port_bump_attempts: None,
-            retry: Some(self.retry),
+            auto_bump_port: match self.bump {
+                None => None,
+                Some(None) => Some(crate::config_types::PortBump(
+                    settings().default_port_bump_attempts(),
+                )),
+                Some(Some(n)) => Some(crate::config_types::PortBump(n)),
+            },
+            retry: Some(crate::config_types::Retry(self.retry)),
         };
 
         // Resolve ID, allowing unconfigured short IDs as ad-hoc global daemons.

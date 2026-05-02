@@ -67,7 +67,7 @@ Wait until TCP port is listening before considering daemon ready
 
 Port(s) the daemon is expected to bind to (can be specified multiple times or comma-separated)
 
-### `--auto-bump-port`
+### `--bump [BUMP]`
 
 Automatically find an available port if the expected port is in use
 

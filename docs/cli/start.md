@@ -72,7 +72,7 @@ Shell command to poll for readiness (exit code 0 = ready)
 
 Ports the daemon is expected to bind to (can be specified multiple times)
 
-### `--auto-bump-port`
+### `--bump [BUMP]`
 
 Automatically find an available port if the expected port is in use
 

@@ -293,13 +293,16 @@ impl Supervisor {
     /// the retry checker to restart the daemon if `retry` is configured.
     async fn stop_for_resource_violation(&self, id: &DaemonId, pid: u32) {
         info!("killing daemon {id} (pid {pid}) due to resource limit violation");
-        let stop_signal: i32 = self
+        let stop_cfg = self
             .get_daemon(id)
             .await
             .and_then(|d| d.stop_signal)
-            .unwrap_or_default()
-            .into();
-        if let Err(e) = PROCS.kill_process_group_async(pid, stop_signal).await {
+            .unwrap_or_default();
+        let stop_signal: i32 = stop_cfg.signal.into();
+        if let Err(e) = PROCS
+            .kill_process_group_async(pid, stop_signal, stop_cfg.timeout)
+            .await
+        {
             error!("failed to kill daemon {id} (pid {pid}) after resource violation: {e}");
         }
     }
@@ -419,7 +422,7 @@ impl Supervisor {
                             let force =
                                 matches!(retrigger, crate::pitchfork_toml::CronRetrigger::Always);
                             let mut opts = daemon.to_run_options(cmd);
-                            opts.dir = dir;
+                            opts.dir = crate::config_types::Dir(dir);
                             opts.force = force;
                             opts.wait_ready = false;
                             opts.cron_schedule = Some(schedule_str.clone());

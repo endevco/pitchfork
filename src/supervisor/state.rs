@@ -11,10 +11,11 @@ use crate::pitchfork_toml::CpuLimit;
 use crate::pitchfork_toml::CronRetrigger;
 use crate::pitchfork_toml::MemoryLimit;
 use crate::pitchfork_toml::PitchforkToml;
-use crate::pitchfork_toml::StopSignal;
+use crate::pitchfork_toml::PortConfig;
+use crate::pitchfork_toml::Retry;
+use crate::pitchfork_toml::StopConfig;
 use crate::pitchfork_toml::WatchMode;
 use crate::procs::PROCS;
-use crate::settings::settings;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,15 +35,15 @@ pub(crate) struct UpsertDaemonOpts {
     pub cron_schedule: Option<String>,
     pub cron_retrigger: Option<CronRetrigger>,
     pub last_exit_success: Option<bool>,
-    pub retry: Option<u32>,
+    pub retry: Option<Retry>,
     pub retry_count: Option<u32>,
     pub ready_delay: Option<u64>,
     pub ready_output: Option<String>,
     pub ready_http: Option<String>,
     pub ready_port: Option<u16>,
     pub ready_cmd: Option<String>,
-    /// Expected ports from configuration (before auto-bump resolution)
-    pub expected_port: Vec<u16>,
+    /// Port configuration
+    pub port: Option<PortConfig>,
     /// Resolved ports actually used after auto-bump (may differ from expected)
     pub resolved_port: Vec<u16>,
     /// The first port the process is actually listening on (detected at runtime).
@@ -51,8 +52,6 @@ pub(crate) struct UpsertDaemonOpts {
     pub slug: Option<String>,
     /// Whether to proxy this daemon (None = use global proxy.enable setting).
     pub proxy: Option<bool>,
-    pub auto_bump_port: Option<bool>,
-    pub port_bump_attempts: Option<u32>,
     pub depends: Option<Vec<DaemonId>>,
     pub env: Option<IndexMap<String, String>>,
     pub watch: Option<Vec<String>>,
@@ -66,7 +65,7 @@ pub(crate) struct UpsertDaemonOpts {
     /// CPU usage limit as a percentage
     pub cpu_limit: Option<CpuLimit>,
     /// Unix signal to send for graceful shutdown
-    pub stop_signal: Option<StopSignal>,
+    pub stop_signal: Option<StopConfig>,
 }
 
 /// Builder for UpsertDaemonOpts - ensures daemon ID is always provided.
@@ -107,13 +106,11 @@ impl UpsertDaemonOpts {
                 ready_http: None,
                 ready_port: None,
                 ready_cmd: None,
-                expected_port: Vec::new(),
+                port: None,
                 resolved_port: Vec::new(),
                 active_port: None,
                 slug: None,
                 proxy: None,
-                auto_bump_port: None,
-                port_bump_attempts: None,
                 depends: None,
                 env: None,
                 watch: None,
@@ -172,7 +169,9 @@ impl Supervisor {
             last_exit_success: opts
                 .last_exit_success
                 .or(existing.and_then(|d| d.last_exit_success)),
-            retry: opts.retry.unwrap_or(existing.map(|d| d.retry).unwrap_or(0)),
+            retry: opts
+                .retry
+                .unwrap_or_else(|| existing.map(|d| d.retry).unwrap_or_default()),
             retry_count: opts
                 .retry_count
                 .unwrap_or(existing.map(|d| d.retry_count).unwrap_or(0)),
@@ -187,13 +186,7 @@ impl Supervisor {
             ready_cmd: opts
                 .ready_cmd
                 .or(existing.and_then(|d| d.ready_cmd.clone())),
-            expected_port: if opts.expected_port.is_empty() {
-                existing
-                    .map(|d| d.expected_port.clone())
-                    .unwrap_or_default()
-            } else {
-                opts.expected_port
-            },
+            port: opts.port.or_else(|| existing.and_then(|d| d.port.clone())),
             resolved_port: if opts.resolved_port.is_empty() {
                 existing
                     .map(|d| d.resolved_port.clone())
@@ -201,14 +194,6 @@ impl Supervisor {
             } else {
                 opts.resolved_port
             },
-            auto_bump_port: opts
-                .auto_bump_port
-                .unwrap_or(existing.map(|d| d.auto_bump_port).unwrap_or(false)),
-            port_bump_attempts: opts.port_bump_attempts.unwrap_or(
-                existing
-                    .map(|d| d.port_bump_attempts)
-                    .unwrap_or_else(|| settings().default_port_bump_attempts()),
-            ),
             depends: opts
                 .depends
                 .unwrap_or_else(|| existing.map(|d| d.depends.clone()).unwrap_or_default()),

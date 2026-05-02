@@ -101,7 +101,7 @@ globset = "0.4"
 humanbyte = { version = "0.2", features = ["serde", "derive"] }
 humantime = "2"
 listeners = "0.5"
-derive_more = { version = "2.1.1", features = ["into", "display", "from"] }
+derive_more = { version = "2.1.1", features = ["into", "display", "from", "deref", "as_ref"] }
 
 [target.'cfg(unix)'.dependencies]
 exec = "0.3"

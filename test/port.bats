@@ -9,13 +9,13 @@ teardown() {
   _common_teardown
 }
 
-@test "config add with port and auto_bump_port" {
-  run pitchfork config add api --run "python3 -m http.server 8080" --expected-port 8080 --auto-bump-port
+@test "config add with port and bump" {
+  run pitchfork config add api --run "python3 -m http.server 8080" --expected-port 8080 --bump
   assert_success
-  
+
   run cat pitchfork.toml
   assert_output --partial 'expected_port = [8080]'
-  assert_output --partial 'auto_bump_port = true'
+  assert_output --partial 'bump'
 }
 
 @test "config add with only port" {
@@ -24,7 +24,7 @@ teardown() {
   
   run cat pitchfork.toml
   assert_output --partial 'expected_port = [3000]'
-  refute_output --partial 'auto_bump_port = true'
+  refute_output --partial 'bump'
 }
 
 @test "start with --expected-port flag" {
@@ -49,7 +49,7 @@ EOF
   run pitchfork stop test-server || true
 }
 
-@test "start with --expected-port and --auto-bump-port flags" {
+@test "start with --expected-port and --bump flags" {
   # Create a simple server script
   cat > server.sh <<'EOF'
 #!/bin/bash
@@ -64,7 +64,7 @@ EOF
   assert_success
   
   # Start with both flags
-  run pitchfork start test-server --expected-port 9999 --auto-bump-port
+  run pitchfork start test-server --expected-port 9999 --bump
   assert_success
   
   # Cleanup
@@ -147,7 +147,7 @@ EOF
   assert_success
   
   # Try to start with the occupied port but with auto-bump - should succeed
-  run pitchfork start test-server --expected-port 38889 --auto-bump-port
+  run pitchfork start test-server --expected-port 38889 --bump
   assert_success
   
   # Clean up the blocking process

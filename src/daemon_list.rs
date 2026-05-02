@@ -4,7 +4,6 @@ use crate::daemon_id::DaemonId;
 use crate::daemon_status::DaemonStatus;
 use crate::ipc::client::IpcClient;
 use crate::pitchfork_toml::PitchforkToml;
-use crate::settings::settings;
 use std::collections::HashSet;
 
 /// Represents a daemon entry that can be either tracked (from state file) or available (from config only)
@@ -110,7 +109,7 @@ fn build_daemon_list(
         let placeholder = Daemon {
             id: daemon_id.clone(),
             status: DaemonStatus::Stopped,
-            port_bump_attempts: settings().default_port_bump_attempts(),
+            port: daemon_config.port.clone(),
             depends: vec![],
             env: None,
             watch: vec![],

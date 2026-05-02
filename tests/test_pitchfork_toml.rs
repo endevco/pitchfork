@@ -89,7 +89,6 @@ fn test_write_pitchfork_toml() -> Result<()> {
         pitchfork_toml::PitchforkTomlDaemon {
             run: "echo 'test'".to_string(),
             retry: pitchfork_toml::Retry(5),
-            port_bump_attempts: 10,
             path: Some(toml_path.clone()),
             ..pitchfork_toml::PitchforkTomlDaemon::default()
         },
@@ -828,7 +827,6 @@ fn test_dir_env_not_serialized_when_none() -> Result<()> {
         DaemonId::try_new(&ns, "test").unwrap(),
         pitchfork_toml::PitchforkTomlDaemon {
             run: "echo test".to_string(),
-            port_bump_attempts: 10,
             ..pitchfork_toml::PitchforkTomlDaemon::default()
         },
     );

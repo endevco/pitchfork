@@ -198,7 +198,7 @@ expected_port = [{}]
     let _ = env.run_command(&["stop", "port_env"]);
 }
 
-/// Test CLI --expected-port and --auto-bump-port flags
+/// Test CLI --expected-port and --bump flags
 #[test]
 fn test_cli_port_flags() {
     let env = TestEnv::new();
@@ -232,13 +232,13 @@ run = "python3 -m http.server 0"
         "Start command should fail when --expected-port conflicts"
     );
 
-    // Now try with --auto-bump-port flag (should succeed)
+    // Now try with --bump flag (should succeed)
     let output = env.run_command(&[
         "start",
         "cli_port_test",
         "--expected-port",
         &port.to_string(),
-        "--auto-bump-port",
+        "--bump",
     ]);
 
     println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -247,7 +247,7 @@ run = "python3 -m http.server 0"
     // Should succeed with auto-bump
     assert!(
         output.status.success(),
-        "Start command should succeed with --auto-bump-port"
+        "Start command should succeed with --bump"
     );
 
     // Cleanup

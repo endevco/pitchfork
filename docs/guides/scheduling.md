@@ -4,12 +4,18 @@ Run daemons on a schedule using cron expressions.
 
 ## Basic Configuration
 
-Add a `cron` section to your daemon:
+Add a `cron` field to your daemon. Accepts a cron expression string (shorthand) or an inline table (full form):
 
 ```toml
+# Shorthand (retrigger defaults to "finish")
 [daemons.backup]
 run = "./scripts/backup.sh"
-cron = { schedule = "0 0 2 * * *", retrigger = "finish" }  # Run at 2 AM daily
+cron = "0 0 2 * * *"
+
+# Full form
+[daemons.backup]
+run = "./scripts/backup.sh"
+cron = { schedule = "0 0 2 * * *", retrigger = "finish" }
 ```
 
 ## Cron Expression Format

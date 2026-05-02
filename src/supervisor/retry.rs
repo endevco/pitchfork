@@ -22,8 +22,8 @@ impl Supervisor {
                     // Daemon is errored, not currently running, and has retries remaining
                     d.status.is_errored()
                         && d.pid.is_none()
-                        && d.retry > 0
-                        && d.retry_count < d.retry
+                        && d.retry.count() > 0
+                        && d.retry_count < d.retry.count()
                 })
                 .map(|(id, _d)| id.clone())
                 .collect()
@@ -38,8 +38,8 @@ impl Supervisor {
                     Some(d)
                         if d.status.is_errored()
                             && d.pid.is_none()
-                            && d.retry > 0
-                            && d.retry_count < d.retry =>
+                            && d.retry.count() > 0
+                            && d.retry_count < d.retry.count() =>
                     {
                         d.clone()
                     }
@@ -50,7 +50,7 @@ impl Supervisor {
                 "retrying daemon {} ({}/{} attempts)",
                 id,
                 daemon.retry_count + 1,
-                daemon.retry
+                daemon.retry.count()
             );
 
             // Get command from pitchfork.toml
@@ -64,7 +64,7 @@ impl Supervisor {
                             UpsertDaemonOpts::builder(id)
                                 .set(|o| {
                                     o.status = daemon.status.clone();
-                                    o.retry_count = Some(daemon.retry);
+                                    o.retry_count = Some(daemon.retry.count());
                                 })
                                 .build(),
                         )
@@ -93,7 +93,7 @@ impl Supervisor {
                 self.upsert_daemon(
                     UpsertDaemonOpts::builder(id)
                         .set(|o| {
-                            o.retry_count = Some(daemon.retry);
+                            o.retry_count = Some(daemon.retry.count());
                         })
                         .build(),
                 )

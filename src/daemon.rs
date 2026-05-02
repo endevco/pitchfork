@@ -1,6 +1,8 @@
 use crate::daemon_id::DaemonId;
 use crate::daemon_status::DaemonStatus;
-use crate::pitchfork_toml::{CpuLimit, CronRetrigger, MemoryLimit, StopSignal, WatchMode};
+use crate::pitchfork_toml::{
+    CpuLimit, CronRetrigger, Dir, MemoryLimit, PortConfig, Retry, StopConfig, WatchMode,
+};
 use indexmap::IndexMap;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -56,7 +58,7 @@ pub fn daemon_log_path(id: &str) -> std::path::PathBuf {
         .join(format!("{safe_id}.log"))
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct Daemon {
     pub id: DaemonId,
     pub title: Option<String>,
@@ -76,7 +78,7 @@ pub struct Daemon {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_exit_success: Option<bool>,
     #[serde(default)]
-    pub retry: u32,
+    pub retry: Retry,
     #[serde(default)]
     pub retry_count: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -89,9 +91,9 @@ pub struct Daemon {
     pub ready_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ready_cmd: Option<String>,
-    /// Expected ports from configuration (before auto-bump resolution)
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub expected_port: Vec<u16>,
+    /// Port configuration (expected ports and auto-bump settings)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub port: Option<PortConfig>,
     /// Resolved ports actually used after auto-bump (may differ from expected)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub resolved_port: Vec<u16>,
@@ -105,10 +107,6 @@ pub struct Daemon {
     /// Whether to proxy this daemon (None = inherit global proxy.enable setting).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proxy: Option<bool>,
-    #[serde(default)]
-    pub auto_bump_port: bool,
-    #[serde(default)]
-    pub port_bump_attempts: u32,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub depends: Vec<DaemonId>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -141,29 +139,27 @@ pub struct Daemon {
     pub cpu_limit: Option<CpuLimit>,
     /// Unix signal to send for graceful shutdown (default: SIGTERM)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub stop_signal: Option<StopSignal>,
+    pub stop_signal: Option<StopConfig>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
 pub struct RunOptions {
     pub id: DaemonId,
     pub cmd: Vec<String>,
     pub force: bool,
     pub shell_pid: Option<u32>,
-    pub dir: PathBuf,
+    pub dir: Dir,
     pub autostop: bool,
     pub cron_schedule: Option<String>,
     pub cron_retrigger: Option<CronRetrigger>,
-    pub retry: u32,
+    pub retry: Retry,
     pub retry_count: u32,
     pub ready_delay: Option<u64>,
     pub ready_output: Option<String>,
     pub ready_http: Option<String>,
     pub ready_port: Option<u16>,
     pub ready_cmd: Option<String>,
-    pub expected_port: Vec<u16>,
-    pub auto_bump_port: bool,
-    pub port_bump_attempts: u32,
+    pub port: Option<PortConfig>,
     pub wait_ready: bool,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub depends: Vec<DaemonId>,
@@ -198,53 +194,10 @@ pub struct RunOptions {
     pub cpu_limit: Option<CpuLimit>,
     /// Unix signal to send for graceful shutdown (default: SIGTERM)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub stop_signal: Option<StopSignal>,
+    pub stop_signal: Option<StopConfig>,
     /// Hook triggered when the daemon produces matching output
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_output_hook: Option<crate::pitchfork_toml::OnOutputHook>,
-}
-
-impl Default for Daemon {
-    fn default() -> Self {
-        Self {
-            id: DaemonId::default(),
-            title: None,
-            pid: None,
-            shell_pid: None,
-            status: DaemonStatus::default(),
-            dir: None,
-            cmd: None,
-            autostop: false,
-            cron_schedule: None,
-            cron_retrigger: None,
-            last_cron_triggered: None,
-            last_exit_success: None,
-            retry: 0,
-            retry_count: 0,
-            ready_delay: None,
-            ready_output: None,
-            ready_http: None,
-            ready_port: None,
-            ready_cmd: None,
-            expected_port: Vec::new(),
-            resolved_port: Vec::new(),
-            active_port: None,
-            slug: None,
-            proxy: None,
-            auto_bump_port: false,
-            port_bump_attempts: 10,
-            depends: Vec::new(),
-            env: None,
-            watch: Vec::new(),
-            watch_mode: WatchMode::default(),
-            watch_base_dir: None,
-            mise: None,
-            user: None,
-            memory_limit: None,
-            cpu_limit: None,
-            stop_signal: None,
-        }
-    }
 }
 
 impl Daemon {
@@ -269,7 +222,7 @@ impl Daemon {
             cmd,
             force: false,
             shell_pid: self.shell_pid,
-            dir: self.dir.clone().unwrap_or_else(|| crate::env::CWD.clone()),
+            dir: Dir(self.dir.clone().unwrap_or_else(|| crate::env::CWD.clone())),
             autostop: self.autostop,
             cron_schedule: self.cron_schedule.clone(),
             cron_retrigger: self.cron_retrigger,
@@ -280,9 +233,7 @@ impl Daemon {
             ready_http: self.ready_http.clone(),
             ready_port: self.ready_port,
             ready_cmd: self.ready_cmd.clone(),
-            expected_port: self.expected_port.clone(),
-            auto_bump_port: self.auto_bump_port,
-            port_bump_attempts: self.port_bump_attempts,
+            port: self.port.clone(),
             wait_ready: false,
             depends: self.depends.clone(),
             env: self.env.clone(),
@@ -297,45 +248,6 @@ impl Daemon {
             cpu_limit: self.cpu_limit,
             stop_signal: self.stop_signal,
             on_output_hook,
-        }
-    }
-}
-
-impl Default for RunOptions {
-    fn default() -> Self {
-        Self {
-            id: DaemonId::default(),
-            cmd: Vec::new(),
-            force: false,
-            shell_pid: None,
-            dir: crate::env::CWD.clone(),
-            autostop: false,
-            cron_schedule: None,
-            cron_retrigger: None,
-            retry: 0,
-            retry_count: 0,
-            ready_delay: None,
-            ready_output: None,
-            ready_http: None,
-            ready_port: None,
-            ready_cmd: None,
-            expected_port: Vec::new(),
-            auto_bump_port: false,
-            port_bump_attempts: 10,
-            wait_ready: false,
-            depends: Vec::new(),
-            env: None,
-            watch: Vec::new(),
-            watch_mode: WatchMode::default(),
-            watch_base_dir: None,
-            mise: None,
-            slug: None,
-            proxy: None,
-            user: None,
-            memory_limit: None,
-            cpu_limit: None,
-            stop_signal: None,
-            on_output_hook: None,
         }
     }
 }

@@ -7,6 +7,66 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // ---------------------------------------------------------------------------
+// StringOrStruct: serde "string or struct" pattern (bidirectional)
+// ---------------------------------------------------------------------------
+
+/// Trait for config types that accept either a string shorthand or a full object.
+///
+/// Follows the serde `string_or_struct` pattern, extended with serialization:
+/// - Deserialize: string -> `from_short`, object -> deserialize `Raw` then `from_raw`
+/// - Serialize: `is_shorthand` -> serialize `Short`, else -> `to_raw` then serialize `Raw`
+///
+/// Implementors provide 4 things:
+/// - `Short` / `Raw` associated types (with serde derives)
+/// - `from_short` / `from_raw` to construct Self
+/// - `is_shorthand` / `to_short` / `to_raw` for serialization direction
+pub trait StringOrStruct: Sized {
+    type Short: for<'de> Deserialize<'de> + Serialize;
+    type Raw: for<'de> Deserialize<'de> + Serialize;
+
+    fn from_short(short: Self::Short) -> Self;
+    fn from_raw(raw: Self::Raw) -> std::result::Result<Self, String>;
+    fn is_shorthand(&self) -> bool;
+    fn to_short(&self) -> Self::Short;
+    fn to_raw(&self) -> Self::Raw;
+
+    fn string_or_struct_serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.is_shorthand() {
+            self.to_short().serialize(s)
+        } else {
+            self.to_raw().serialize(s)
+        }
+    }
+
+    fn string_or_struct_deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        struct Visitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: StringOrStruct> serde::de::Visitor<'de> for Visitor<T> {
+            type Value = T;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string or an object")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<T, E> {
+                let short = T::Short::deserialize(serde::de::value::StrDeserializer::<E>::new(v))
+                    .map_err(E::custom)?;
+                Ok(T::from_short(short))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+                let raw = T::Raw::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                T::from_raw(raw).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor::<Self>(std::marker::PhantomData))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BoolOrU32 serde helpers
 // ---------------------------------------------------------------------------
 
@@ -197,13 +257,112 @@ impl JsonSchema for StopSignal {
 }
 
 // ---------------------------------------------------------------------------
+// StopConfig (string-or-object pattern)
+// ---------------------------------------------------------------------------
+
+/// Daemon stop configuration: a signal and an optional per-daemon timeout.
+///
+/// Accepts two TOML forms:
+/// ```toml
+/// stop_signal = "SIGINT"                         # shorthand
+/// stop_signal = { signal = "SIGINT", timeout = "500ms" }  # full
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StopConfig {
+    pub signal: StopSignal,
+    pub timeout: Option<std::time::Duration>,
+}
+
+/// Helper for the object form of StopConfig.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[doc(hidden)]
+pub struct StopConfigRaw {
+    signal: StopSignal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout: Option<String>,
+}
+
+impl StringOrStruct for StopConfig {
+    type Short = StopSignal;
+    type Raw = StopConfigRaw;
+
+    fn from_short(signal: StopSignal) -> Self {
+        Self {
+            signal,
+            timeout: None,
+        }
+    }
+
+    fn from_raw(raw: StopConfigRaw) -> std::result::Result<Self, String> {
+        let timeout = raw
+            .timeout
+            .map(|s| humantime::parse_duration(&s).map_err(|e| format!("invalid timeout: {e}")))
+            .transpose()?;
+        Ok(Self {
+            signal: raw.signal,
+            timeout,
+        })
+    }
+
+    fn is_shorthand(&self) -> bool {
+        self.timeout.is_none()
+    }
+
+    fn to_short(&self) -> StopSignal {
+        self.signal
+    }
+
+    fn to_raw(&self) -> StopConfigRaw {
+        StopConfigRaw {
+            signal: self.signal,
+            timeout: self
+                .timeout
+                .map(|d| humantime::format_duration(d).to_string()),
+        }
+    }
+}
+
+impl Serialize for StopConfig {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.string_or_struct_serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for StopConfig {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::string_or_struct_deserialize(d)
+    }
+}
+
+impl JsonSchema for StopConfig {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("StopConfig")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Stop signal config: a signal name string, or { signal, timeout } object",
+            "oneOf": [
+                generator.subschema_for::<StopSignal>(),
+                {
+                    "type": "object",
+                    "properties": {
+                        "signal": generator.subschema_for::<StopSignal>(),
+                        "timeout": { "type": "string", "description": "Graceful shutdown timeout (e.g. '500ms', '3s')" }
+                    },
+                    "required": ["signal"]
+                }
+            ]
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Retry
 // ---------------------------------------------------------------------------
 
 /// Retry configuration: `true` = indefinite, `false`/`0` = none, number = count.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema, derive_more::From, derive_more::Into,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::From, derive_more::Into)]
 pub struct Retry(pub u32);
 
 impl BoolOrU32 for Retry {
@@ -239,5 +398,535 @@ impl Serialize for Retry {
 impl<'de> Deserialize<'de> for Retry {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Self::bool_or_u32_deserialize(d)
+    }
+}
+
+impl JsonSchema for Retry {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Retry")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Retry: true = indefinite, false/0 = none, number = count",
+            "oneOf": [
+                { "type": "boolean" },
+                { "type": "integer", "minimum": 0 }
+            ]
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WatchMode
+// ---------------------------------------------------------------------------
+
+/// File watch backend mode for daemon `watch` patterns.
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchMode {
+    /// Use platform-native watcher backend (inotify/FSEvents/ReadDirectoryChangesW).
+    #[default]
+    Native,
+    /// Use polling backend; more compatible on networked filesystems.
+    Poll,
+    /// Prefer native backend, fall back to polling when native watch setup fails.
+    Auto,
+}
+
+// ---------------------------------------------------------------------------
+// CronRetrigger
+// ---------------------------------------------------------------------------
+
+/// Retrigger behavior for cron-scheduled daemons
+#[derive(
+    Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CronRetrigger {
+    /// Retrigger only if the previous run has finished (success or error)
+    #[default]
+    Finish,
+    /// Always retrigger, stopping the previous run if still active
+    Always,
+    /// Retrigger only if the previous run succeeded
+    Success,
+    /// Retrigger only if the previous run failed
+    Fail,
+}
+
+// PitchforkTomlCron (string-or-object pattern)
+// ---------------------------------------------------------------------------
+
+/// Cron scheduling configuration.
+///
+/// Accepts two forms:
+/// ```toml
+/// cron = "0 * * * *"                                    # shorthand
+/// cron = { schedule = "0 * * * *", retrigger = "always" }  # full
+/// ```
+#[derive(Debug, Clone)]
+pub struct PitchforkTomlCron {
+    /// Cron expression (e.g., '0 * * * *' for hourly, '*/5 * * * *' for every 5 minutes)
+    pub schedule: String,
+    /// Behavior when cron triggers while previous run is still active
+    pub retrigger: CronRetrigger,
+}
+
+impl JsonSchema for PitchforkTomlCron {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PitchforkTomlCron")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Cron scheduling: a cron expression string, or { schedule, retrigger } object",
+            "oneOf": [
+                { "type": "string", "description": "Cron expression (e.g. '0 * * * *')" },
+                {
+                    "type": "object",
+                    "properties": {
+                        "schedule": { "type": "string", "description": "Cron expression" },
+                        "retrigger": generator.subschema_for::<CronRetrigger>()
+                    },
+                    "required": ["schedule"]
+                }
+            ]
+        })
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[doc(hidden)]
+pub struct PitchforkTomlCronRaw {
+    schedule: String,
+    #[serde(default)]
+    retrigger: CronRetrigger,
+}
+
+impl StringOrStruct for PitchforkTomlCron {
+    type Short = String;
+    type Raw = PitchforkTomlCronRaw;
+
+    fn from_short(schedule: String) -> Self {
+        Self {
+            schedule,
+            retrigger: CronRetrigger::default(),
+        }
+    }
+
+    fn from_raw(raw: PitchforkTomlCronRaw) -> std::result::Result<Self, String> {
+        Ok(Self {
+            schedule: raw.schedule,
+            retrigger: raw.retrigger,
+        })
+    }
+
+    fn is_shorthand(&self) -> bool {
+        self.retrigger == CronRetrigger::default()
+    }
+
+    fn to_short(&self) -> String {
+        self.schedule.clone()
+    }
+
+    fn to_raw(&self) -> PitchforkTomlCronRaw {
+        PitchforkTomlCronRaw {
+            schedule: self.schedule.clone(),
+            retrigger: self.retrigger,
+        }
+    }
+}
+
+impl Serialize for PitchforkTomlCron {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.string_or_struct_serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for PitchforkTomlCron {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::string_or_struct_deserialize(d)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PitchforkTomlAuto
+// ---------------------------------------------------------------------------
+
+/// Auto start/stop configuration
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PitchforkTomlAuto {
+    Start,
+    Stop,
+}
+
+// ---------------------------------------------------------------------------
+// OnOutputHook (string-or-object pattern)
+// ---------------------------------------------------------------------------
+
+/// Output hook configuration.
+///
+/// Accepts two forms:
+/// ```toml
+/// on_output = "echo matched"                              # shorthand (run only)
+/// on_output = { run = "echo matched", filter = "ready" }  # full
+/// ```
+#[derive(Debug, Clone, JsonSchema)]
+pub struct OnOutputHook {
+    /// Command to run when the output condition is met
+    pub run: String,
+    /// Fire when a line of output contains this substring
+    pub filter: Option<String>,
+    /// Fire when a line of output matches this regular expression
+    pub regex: Option<String>,
+    /// Minimum time between successive firings (humantime, e.g. `"500ms"`).
+    /// Defaults to `"1000ms"`.
+    pub debounce: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[doc(hidden)]
+pub struct OnOutputHookRaw {
+    run: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    filter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    regex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    debounce: Option<String>,
+}
+
+impl StringOrStruct for OnOutputHook {
+    type Short = String;
+    type Raw = OnOutputHookRaw;
+
+    fn from_short(run: String) -> Self {
+        Self {
+            run,
+            filter: None,
+            regex: None,
+            debounce: None,
+        }
+    }
+
+    fn from_raw(raw: OnOutputHookRaw) -> std::result::Result<Self, String> {
+        Ok(Self {
+            run: raw.run,
+            filter: raw.filter,
+            regex: raw.regex,
+            debounce: raw.debounce,
+        })
+    }
+
+    fn is_shorthand(&self) -> bool {
+        self.filter.is_none() && self.regex.is_none() && self.debounce.is_none()
+    }
+
+    fn to_short(&self) -> String {
+        self.run.clone()
+    }
+
+    fn to_raw(&self) -> OnOutputHookRaw {
+        OnOutputHookRaw {
+            run: self.run.clone(),
+            filter: self.filter.clone(),
+            regex: self.regex.clone(),
+            debounce: self.debounce.clone(),
+        }
+    }
+}
+
+impl Serialize for OnOutputHook {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.string_or_struct_serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for OnOutputHook {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::string_or_struct_deserialize(d)
+    }
+}
+
+impl OnOutputHook {
+    /// Validate configuration: `filter` and `regex` are mutually exclusive,
+    /// `regex` must be a valid regular expression, and `debounce` (if present)
+    /// must be a valid humantime duration.
+    pub fn validate(&self, daemon_name: &str) -> crate::Result<()> {
+        if self.filter.is_some() && self.regex.is_some() {
+            miette::bail!(
+                "daemon {daemon_name}: on_output.filter and on_output.regex are mutually exclusive"
+            );
+        }
+        if let Some(ref pattern) = self.regex {
+            regex::Regex::new(pattern).map_err(|e| {
+                miette::miette!(
+                    "daemon {daemon_name}: on_output.regex {pattern:?} is not a valid regular expression: {e}"
+                )
+            })?;
+        }
+        if let Some(ref d) = self.debounce {
+            humantime::parse_duration(d).map_err(|e| {
+                miette::miette!(
+                    "daemon {daemon_name}: on_output.debounce {d:?} is not a valid duration: {e}"
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Resolved debounce duration. Falls back to 1 second.
+    pub fn debounce_duration(&self) -> std::time::Duration {
+        self.debounce
+            .as_deref()
+            .and_then(|s| humantime::parse_duration(s).ok())
+            .unwrap_or(std::time::Duration::from_millis(1000))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PitchforkTomlHooks
+// ---------------------------------------------------------------------------
+
+/// Lifecycle hooks for a daemon
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct PitchforkTomlHooks {
+    /// Command to run when the daemon becomes ready
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_ready: Option<String>,
+    /// Command to run when the daemon fails and all retries are exhausted
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_fail: Option<String>,
+    /// Command to run before each retry attempt
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_retry: Option<String>,
+    /// Command to run when the daemon is explicitly stopped by pitchfork
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_stop: Option<String>,
+    /// Command to run on any daemon termination (clean exit, crash, or stop)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_exit: Option<String>,
+    /// Hook triggered when the daemon produces matching output
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_output: Option<OnOutputHook>,
+}
+
+// ---------------------------------------------------------------------------
+// PortBump (BoolOrU32 pattern)
+// ---------------------------------------------------------------------------
+
+/// Port bump attempts: `true` = unlimited, `false`/`0` = disabled, number = max attempts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::From, derive_more::Into)]
+pub struct PortBump(pub u32);
+
+impl BoolOrU32 for PortBump {
+    const TRUE_VALUE: u32 = u32::MAX;
+}
+
+impl Serialize for PortBump {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.bool_or_u32_serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for PortBump {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::bool_or_u32_deserialize(d)
+    }
+}
+
+impl JsonSchema for PortBump {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PortBump")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Port bump: true = unlimited, false/0 = disabled, number = max attempts",
+            "oneOf": [
+                { "type": "boolean" },
+                { "type": "integer", "minimum": 0 }
+            ]
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PortConfig (number, array, or object)
+// ---------------------------------------------------------------------------
+
+/// Port configuration for a daemon.
+///
+/// Accepts three TOML forms:
+/// ```toml
+/// port = 5173                                  # single port
+/// port = [5173, 5174]                          # multiple ports
+/// port = { expect = [5173], bump = 10 }        # full form with bump
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PortConfig {
+    pub expect: Vec<u16>,
+    pub bump: PortBump,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[doc(hidden)]
+pub struct PortConfigRaw {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect: Vec<u16>,
+    #[serde(default)]
+    pub bump: PortBump,
+}
+
+impl Serialize for PortConfig {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.bump.0 == 0 {
+            if self.expect.len() == 1 {
+                s.serialize_u16(self.expect[0])
+            } else {
+                self.expect.serialize(s)
+            }
+        } else {
+            PortConfigRaw {
+                expect: self.expect.clone(),
+                bump: self.bump,
+            }
+            .serialize(s)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PortConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PortConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a port number, array of ports, or { expect, bump } object")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<PortConfig, E> {
+                let port = u16::try_from(v)
+                    .map_err(|_| E::custom(format!("port {v} out of range (0-65535)")))?;
+                Ok(PortConfig {
+                    expect: vec![port],
+                    bump: PortBump(0),
+                })
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<PortConfig, E> {
+                if v < 0 {
+                    Err(E::custom("port cannot be negative"))
+                } else {
+                    self.visit_u64(v as u64)
+                }
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<PortConfig, A::Error> {
+                let mut ports = Vec::new();
+                while let Some(port) = seq.next_element::<u16>()? {
+                    ports.push(port);
+                }
+                Ok(PortConfig {
+                    expect: ports,
+                    bump: PortBump(0),
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<PortConfig, A::Error> {
+                let raw: PortConfigRaw =
+                    Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(PortConfig {
+                    expect: raw.expect,
+                    bump: raw.bump,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(V)
+    }
+}
+
+impl PortConfig {
+    /// Construct from expected ports and bump config, returning `None` if both are empty/zero.
+    pub fn from_parts(expect: Vec<u16>, bump: PortBump) -> Option<Self> {
+        if expect.is_empty() && bump.0 == 0 {
+            None
+        } else {
+            Some(Self { expect, bump })
+        }
+    }
+
+    /// Whether auto-bump is enabled (bump > 0).
+    pub fn auto_bump(&self) -> bool {
+        self.bump.0 > 0
+    }
+
+    /// Maximum bump attempts. Returns 0 if bump is disabled.
+    pub fn max_bump_attempts(&self) -> u32 {
+        self.bump.0
+    }
+}
+
+impl JsonSchema for PortConfig {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PortConfig")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Port config: a port number, array of ports, or { expect, bump } object",
+            "oneOf": [
+                { "type": "integer", "minimum": 0, "maximum": 65535 },
+                { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 65535 } },
+                {
+                    "type": "object",
+                    "properties": {
+                        "expect": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 65535 } },
+                        "bump": generator.subschema_for::<PortBump>()
+                    }
+                }
+            ]
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dir (working directory with CWD default)
+// ---------------------------------------------------------------------------
+
+/// Working directory for a daemon process.
+///
+/// Defaults to the current working directory at process start.
+#[derive(
+    Debug,
+    Clone,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::Deref,
+    derive_more::AsRef,
+)]
+#[serde(transparent)]
+#[deref(forward)]
+#[as_ref(forward)]
+pub struct Dir(pub std::path::PathBuf);
+
+impl Default for Dir {
+    fn default() -> Self {
+        Self(crate::env::CWD.clone())
     }
 }

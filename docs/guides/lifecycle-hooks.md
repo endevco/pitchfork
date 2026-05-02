@@ -78,7 +78,15 @@ The `PITCHFORK_EXIT_CODE` and `PITCHFORK_EXIT_REASON` environment variables are 
 
 Fires when the daemon writes a line to stdout or stderr that matches an optional pattern. Useful for reacting to log messages without relying on a readiness check.
 
-`on_output` takes an inline table with the following fields:
+`on_output` accepts a command string (shorthand) or an inline table (full form):
+
+```toml
+# Shorthand (run only, fires on every line)
+on_output = "./scripts/log-activity.sh"
+
+# Full form with filter/regex/debounce
+on_output = { filter = "Server started", run = "curl https://monitor.example.com/up" }
+```
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -117,6 +125,33 @@ All hooks receive these environment variables:
 | `PITCHFORK_MATCHED_LINE` | The raw output line that triggered the hook (`on_output` only) |
 
 Any custom `env` variables from the daemon config are also passed to hooks.
+
+## Stop Signal
+
+By default, pitchfork sends `SIGTERM` to gracefully stop daemons. Some daemons (e.g. Node.js, Docker-based services) may handle `SIGINT` (Ctrl+C) for graceful shutdown instead. Use `stop_signal` to configure this:
+
+```toml
+# Signal name only (shorthand)
+[daemons.api]
+run = "node server.js"
+stop_signal = "SIGINT"
+
+# Signal with custom timeout
+[daemons.api]
+run = "node server.js"
+stop_signal = { signal = "SIGINT", timeout = "5s" }
+```
+
+**Allowed signals:** `SIGTERM`, `SIGINT`, `SIGQUIT`, `SIGHUP`, `SIGUSR1`, `SIGUSR2`
+
+**Fields (object form):**
+- `signal` - Signal name to send (with or without `SIG` prefix)
+- `timeout` - Maximum time to wait for the process to exit before sending `SIGKILL` (overrides the global `settings.supervisor.stop_timeout`)
+
+**Behavior:**
+- Pitchfork sends the configured signal to the entire process group
+- If the process does not exit within the timeout, `SIGKILL` is sent as a last resort
+- The default signal is `SIGTERM`, and the default timeout comes from `settings.supervisor.stop_timeout`
 
 ## Behavior
 

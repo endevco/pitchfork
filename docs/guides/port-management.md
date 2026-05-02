@@ -9,21 +9,35 @@ Configure the ports your daemon expects to use:
 ```toml
 [daemons.api]
 run = "node server.js"
-expected_port = [3000]
+port = 3000
+```
+
+For multiple ports:
+
+```toml
+[daemons.multi]
+run = "./start.sh"
+port = [8080, 8443]
 ```
 
 Pitchfork checks if the port is available before starting, injects `PORT=3000` into the daemon's environment, and fails with a clear error if the port is already in use.
 
 ### Auto Port Bumping
 
-When a port is occupied, enable `auto_bump_port` to automatically find the next available port:
+When a port is occupied, enable `bump` to automatically find the next available port:
 
 ```toml
 [daemons.api]
 run = "node server.js"
-expected_port = [3000]
-auto_bump_port = true
-port_bump_attempts = 10   # default: 3
+port = { expect = [3000], bump = 10 }  # bump up to 10 times
+```
+
+Using `bump = true` enables unlimited bump attempts:
+
+```toml
+[daemons.api]
+run = "node server.js"
+port = { expect = [3000], bump = true }
 ```
 
 The daemon receives the actual allocated port via `$PORT`.

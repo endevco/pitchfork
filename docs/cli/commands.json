@@ -406,16 +406,23 @@
                 }
               },
               {
-                "name": "auto-bump-port",
-                "usage": "--auto-bump-port",
+                "name": "bump",
+                "usage": "--bump [BUMP]",
                 "help": "Automatically find an available port if the expected port is in use",
                 "help_first_line": "Automatically find an available port if the expected port is in use",
                 "short": [],
                 "long": [
-                  "auto-bump-port"
+                  "bump"
                 ],
                 "hide": false,
-                "global": false
+                "global": false,
+                "arg": {
+                  "name": "BUMP",
+                  "usage": "[BUMP]",
+                  "required": false,
+                  "double_dash": "Optional",
+                  "hide": false
+                }
               },
               {
                 "name": "depends",
@@ -1463,16 +1470,23 @@
             }
           },
           {
-            "name": "auto-bump-port",
-            "usage": "--auto-bump-port",
+            "name": "bump",
+            "usage": "--bump [BUMP]",
             "help": "Automatically find an available port if the expected port is in use",
             "help_first_line": "Automatically find an available port if the expected port is in use",
             "short": [],
             "long": [
-              "auto-bump-port"
+              "bump"
             ],
             "hide": false,
-            "global": false
+            "global": false,
+            "arg": {
+              "name": "BUMP",
+              "usage": "[BUMP]",
+              "required": false,
+              "double_dash": "Optional",
+              "hide": false
+            }
           },
           {
             "name": "cmd",
@@ -1745,16 +1759,23 @@
             }
           },
           {
-            "name": "auto-bump-port",
-            "usage": "--auto-bump-port",
+            "name": "bump",
+            "usage": "--bump [BUMP]",
             "help": "Automatically find an available port if the expected port is in use",
             "help_first_line": "Automatically find an available port if the expected port is in use",
             "short": [],
             "long": [
-              "auto-bump-port"
+              "bump"
             ],
             "hide": false,
-            "global": false
+            "global": false,
+            "arg": {
+              "name": "BUMP",
+              "usage": "[BUMP]",
+              "required": false,
+              "double_dash": "Optional",
+              "hide": false
+            }
           },
           {
             "name": "quiet",

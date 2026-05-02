@@ -90,8 +90,8 @@ pub struct Start {
     #[clap(long, value_delimiter = ',')]
     expected_port: Vec<u16>,
     /// Automatically find an available port if the expected port is in use
-    #[clap(long)]
-    auto_bump_port: bool,
+    #[clap(long, num_args = 0..=1, value_name = "[BUMP]")]
+    bump: Option<Option<u32>>,
     /// Suppress startup log output
     #[clap(short, long)]
     quiet: bool,
@@ -126,7 +126,13 @@ impl Start {
             port: self.port,
             cmd: self.cmd.clone(),
             expected_port: (!self.expected_port.is_empty()).then_some(self.expected_port.clone()),
-            auto_bump_port: self.auto_bump_port,
+            auto_bump_port: match self.bump {
+                None => None,
+                Some(None) => Some(crate::config_types::PortBump(
+                    crate::settings::settings().default_port_bump_attempts(),
+                )),
+                Some(Some(n)) => Some(crate::config_types::PortBump(n)),
+            },
             ..Default::default()
         };
 

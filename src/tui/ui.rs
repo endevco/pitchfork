@@ -1591,7 +1591,12 @@ fn draw_details_overlay(f: &mut Frame, app: &App) {
         let ports_to_show = daemon
             .filter(|d| !d.resolved_port.is_empty())
             .map(|d| d.resolved_port.clone())
-            .unwrap_or_else(|| cfg.expected_port.clone());
+            .unwrap_or_else(|| {
+                cfg.port
+                    .as_ref()
+                    .map(|p| p.expect.clone())
+                    .unwrap_or_default()
+            });
 
         if !ports_to_show.is_empty() {
             let port_str = ports_to_show

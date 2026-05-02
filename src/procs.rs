@@ -68,10 +68,17 @@ impl Procs {
         children
     }
 
-    pub async fn kill_process_group_async(&self, pid: u32, stop_signal: i32) -> Result<bool> {
-        tokio::task::spawn_blocking(move || PROCS.kill_process_group(pid, stop_signal))
-            .await
-            .into_diagnostic()?
+    pub async fn kill_process_group_async(
+        &self,
+        pid: u32,
+        stop_signal: i32,
+        stop_timeout: Option<std::time::Duration>,
+    ) -> Result<bool> {
+        tokio::task::spawn_blocking(move || {
+            PROCS.kill_process_group(pid, stop_signal, stop_timeout)
+        })
+        .await
+        .into_diagnostic()?
     }
 
     /// Kill an entire process group with graceful shutdown strategy:
@@ -83,7 +90,12 @@ impl Procs {
     ///
     /// Returns `Err` if the signal could not be sent (e.g. permission denied).
     #[cfg(unix)]
-    fn kill_process_group(&self, pid: u32, stop_signal: i32) -> Result<bool> {
+    fn kill_process_group(
+        &self,
+        pid: u32,
+        stop_signal: i32,
+        stop_timeout: Option<std::time::Duration>,
+    ) -> Result<bool> {
         let pgid = pid as i32;
         let signal_name = signal_name(stop_signal);
 
@@ -109,8 +121,8 @@ impl Procs {
         }
 
         // Wait for graceful shutdown: fast initial check then slower polling.
-        // Use the configurable stop_timeout setting to govern total wait time.
-        let stop_timeout = settings().supervisor_stop_timeout();
+        // Per-daemon timeout overrides the global setting.
+        let stop_timeout = stop_timeout.unwrap_or_else(|| settings().supervisor_stop_timeout());
         let fast_ms = 10u64;
         let slow_ms = 50u64;
         let total_ms = stop_timeout.as_millis().max(1) as u64;
@@ -154,13 +166,22 @@ impl Procs {
     }
 
     #[cfg(not(unix))]
-    fn kill_process_group(&self, pid: u32, _stop_signal: i32) -> Result<bool> {
-        // On non-unix platforms, fall back to single-process kill
-        self.kill(pid)
+    fn kill_process_group(
+        &self,
+        pid: u32,
+        _stop_signal: i32,
+        _stop_timeout: Option<std::time::Duration>,
+    ) -> Result<bool> {
+        self.kill(pid, 0, None)
     }
 
-    pub async fn kill_async(&self, pid: u32, stop_signal: i32) -> Result<bool> {
-        tokio::task::spawn_blocking(move || PROCS.kill(pid, stop_signal))
+    pub async fn kill_async(
+        &self,
+        pid: u32,
+        stop_signal: i32,
+        stop_timeout: Option<std::time::Duration>,
+    ) -> Result<bool> {
+        tokio::task::spawn_blocking(move || PROCS.kill(pid, stop_signal, stop_timeout))
             .await
             .into_diagnostic()?
     }
@@ -174,7 +195,12 @@ impl Procs {
     ///
     /// Returns `Err` if the signal could not be sent (e.g. permission denied
     /// when targeting a process owned by another user/root).
-    fn kill(&self, pid: u32, stop_signal: i32) -> Result<bool> {
+    fn kill(
+        &self,
+        pid: u32,
+        stop_signal: i32,
+        stop_timeout: Option<std::time::Duration>,
+    ) -> Result<bool> {
         let sysinfo_pid = sysinfo::Pid::from_u32(pid);
 
         // Check if process exists or is a zombie (already terminated but not reaped)
@@ -218,8 +244,8 @@ impl Procs {
             }
 
             // Fast check: 10ms intervals, then slower 50ms polling for stop_timeout.
-            // Cap fast_count so short timeouts (e.g. 50ms) are honoured correctly.
-            let stop_timeout = settings().supervisor_stop_timeout();
+            // Per-daemon timeout overrides the global setting.
+            let stop_timeout = stop_timeout.unwrap_or_else(|| settings().supervisor_stop_timeout());
             let fast_ms = 10u64;
             let slow_ms = 50u64;
             let total_ms = stop_timeout.as_millis().max(1) as u64;

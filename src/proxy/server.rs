@@ -1380,8 +1380,8 @@ async fn try_auto_start_inner(
         }
     };
 
-    if run_opts.dir.as_os_str().is_empty() {
-        run_opts.dir = cached.dir.clone();
+    if run_opts.dir.0.as_os_str().is_empty() {
+        run_opts.dir = crate::config_types::Dir(cached.dir.clone());
     }
 
     log::info!("Auto-start: starting daemon {daemon_id} for slug '{slug}'");

@@ -498,8 +498,8 @@ pub async fn start(Path(id): Path<String>, Query(query): Query<StartQuery>) -> H
 
         // Web UI specific: don't block on ready check, use CWD if no path
         run_opts.wait_ready = false;
-        if run_opts.dir.as_os_str().is_empty() {
-            run_opts.dir = env::CWD.clone();
+        if run_opts.dir.0.as_os_str().is_empty() {
+            run_opts.dir = crate::config_types::Dir(env::CWD.clone());
         }
 
         match SUPERVISOR.run(run_opts).await {

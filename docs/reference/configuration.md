@@ -341,46 +341,68 @@ watch_mode = "auto"
 - `settings.supervisor.watch_poll_interval` controls polling scan cadence
 - `settings.supervisor.watch_interval` controls how often supervisor refreshes watch config state
 
-### `expected_port`
+### `port`
 
-TCP ports the daemon is expected to bind to. Used for port conflict detection before starting a daemon.
+Port configuration for the daemon. Accepts three forms:
 
 ```toml
+# Single port (shorthand)
 [daemons.api]
 run = "node server.js"
-expected_port = [3000]
+port = 3000
 
+# Multiple ports (array)
 [daemons.multi]
 run = "./start.sh"
-expected_port = [8080, 8443]
-```
+port = [8080, 8443]
 
-### `auto_bump_port`
-
-When `true`, pitchfork automatically finds an available port if the expected port is already in use. All ports in `expected_port` are bumped by the same offset to maintain relative spacing. Default: `false`
-
-```toml
+# Full form with auto-bump
 [daemons.api]
 run = "node server.js"
-expected_port = [3000]
-auto_bump_port = true
+port = { expect = [3000], bump = 10 }
 ```
+
+**Fields (object form):**
+- `expect` - List of TCP ports the daemon is expected to bind to
+- `bump` - Auto port-bump configuration: `true` = unlimited attempts, a number = max attempts, `false`/`0` = disabled (default)
 
 **Behavior:**
-- Tries incrementing all ports by the same offset (1, 2, 3, ...) up to `port_bump_attempts` (default: 10)
+- Pitchfork checks if the port is available before starting
+- The resolved port is injected as `$PORT` into the daemon's environment
+- When `bump` is enabled and the port is occupied, all ports are incremented by the same offset to maintain relative spacing
 - Resolved ports are available via `pitchfork status` and in the start output
-- Useful for running multiple instances of the same service
 
-### `port_bump_attempts`
+### `expected_port` (deprecated)
 
-Maximum number of port increment attempts when `auto_bump_port` is enabled. Default: `10`
+Use `port` instead. TCP ports the daemon is expected to bind to.
 
 ```toml
 [daemons.api]
 run = "node server.js"
-expected_port = [3000]
-auto_bump_port = true
-port_bump_attempts = 20
+expected_port = [3000]  # deprecated: use port = 3000
+```
+
+### `auto_bump_port` (deprecated)
+
+Use `port.bump` instead. When `true`, pitchfork automatically finds an available port if the expected port is already in use.
+
+```toml
+[daemons.api]
+run = "node server.js"
+expected_port = [3000]   # deprecated
+auto_bump_port = true    # deprecated: use port = { expect = [3000], bump = true }
+```
+
+### `port_bump_attempts` (deprecated)
+
+Use `port.bump` instead. Maximum number of port increment attempts when `auto_bump_port` is enabled. Default: `10`
+
+```toml
+[daemons.api]
+run = "node server.js"
+expected_port = [3000]     # deprecated
+auto_bump_port = true      # deprecated
+port_bump_attempts = 20    # deprecated: use port = { expect = [3000], bump = 20 }
 ```
 
 ### `boot_start`
@@ -414,17 +436,24 @@ on_retry = "echo 'retrying...'"
 - `on_retry` - Runs before each retry attempt
 - `on_stop` - Runs when the daemon is explicitly stopped by pitchfork
 - `on_exit` - Runs on any daemon termination (stop, clean exit, or crash); also fires during supervisor shutdown
+- `on_output` - Fires when the daemon produces matching output. Accepts a command string (shorthand) or an inline table `{ run, filter?, regex?, debounce? }`
 
 Hook commands receive environment variables: `PITCHFORK_DAEMON_ID` (fully-qualified `namespace/name`), `PITCHFORK_DAEMON_NAMESPACE`, `PITCHFORK_RETRY_COUNT`, `PITCHFORK_EXIT_CODE`, and (for `on_stop`/`on_exit`) `PITCHFORK_EXIT_REASON` (`"stop"`, `"exit"`, or `"fail"`). See [Lifecycle Hooks guide](/guides/lifecycle-hooks) for details.
 
 ### `cron`
 
-Cron scheduling configuration.
+Cron scheduling configuration. Accepts a cron expression string (shorthand) or an inline table (full form).
 
 ```toml
+# Shorthand (retrigger defaults to "finish")
 [daemons.backup]
 run = "./backup.sh"
-cron = { schedule = "0 0 2 * * *", retrigger = "finish" }
+cron = "0 0 2 * * *"
+
+# Full form
+[daemons.backup]
+run = "./backup.sh"
+cron = { schedule = "0 0 2 * * *", retrigger = "always" }
 ```
 
 **Fields:**
@@ -494,6 +523,33 @@ cpu_limit = 200    # Up to 2 CPU cores
 - Only affects the daemon's process group, not the pitchfork supervisor itself
 - Default: no limit
 
+### `stop_signal`
+
+Unix signal to send for graceful shutdown. Accepts a signal name string or a `{ signal, timeout }` object. Default: `SIGTERM`
+
+```toml
+# Signal name only (shorthand)
+[daemons.api]
+run = "node server.js"
+stop_signal = "SIGINT"
+
+# Signal with custom timeout
+[daemons.postgres]
+run = "postgres -D /var/lib/postgres"
+stop_signal = { signal = "SIGINT", timeout = "5s" }
+```
+
+**Allowed signals:** `SIGTERM`, `SIGINT`, `SIGQUIT`, `SIGHUP`, `SIGUSR1`, `SIGUSR2`
+
+**Fields (object form):**
+- `signal` - Signal name to send (with or without `SIG` prefix)
+- `timeout` - Maximum time to wait for the process to exit before sending `SIGKILL` (humantime format, e.g. `"500ms"`, `"3s"`). Overrides the global `settings.supervisor.stop_timeout` for this daemon.
+
+**Behavior:**
+- When stopping a daemon, pitchfork sends the configured signal to the entire process group
+- If the process does not exit within the timeout, `SIGKILL` is sent as a last resort
+- Useful for daemons that handle `SIGINT` (Ctrl+C) for graceful termination but ignore `SIGTERM`
+
 ## Complete Example
 
 ```toml
@@ -518,6 +574,7 @@ watch = ["src/**/*.ts", "package.json"]
 ready_http = "http://localhost:3000/health"
 auto = ["start", "stop"]
 retry = 5
+port = { expect = [3000], bump = true }
 env = { NODE_ENV = "development", PORT = "3000" }
 memory_limit = "2GiB"
 cpu_limit = 200

@@ -10,7 +10,6 @@ use crate::ipc::client::IpcClient;
 use crate::pitchfork_toml::{
     PitchforkToml, PitchforkTomlDaemon, is_dot_config_pitchfork, is_global_config,
 };
-use crate::settings::settings;
 
 use chrono::{DateTime, Local};
 use indexmap::IndexMap;
@@ -75,12 +74,10 @@ pub struct StartOptions {
     pub cmd: Option<String>,
     /// Ports the daemon is expected to bind to (None = not specified, use config)
     pub expected_port: Option<Vec<u16>>,
-    /// Automatically find an available port if the expected port is in use
-    pub auto_bump_port: bool,
-    /// Maximum number of port bump attempts when auto_bump_port is enabled
-    pub port_bump_attempts: Option<u32>,
+    /// Port auto-bump configuration (None = use config, Some = override)
+    pub auto_bump_port: Option<crate::config_types::PortBump>,
     /// Number of times to retry on failure (for ad-hoc daemons)
-    pub retry: Option<u32>,
+    pub retry: Option<crate::config_types::Retry>,
 }
 
 /// Build RunOptions from a daemon configuration and start options.
@@ -107,11 +104,12 @@ pub fn build_run_options(
     run_opts.ready_http = opts.http.clone().or(run_opts.ready_http);
     run_opts.ready_port = opts.port.or(run_opts.ready_port);
     run_opts.ready_cmd = opts.cmd.clone().or(run_opts.ready_cmd);
-    run_opts.expected_port = opts.expected_port.clone().unwrap_or(run_opts.expected_port);
-    run_opts.auto_bump_port = opts.auto_bump_port || run_opts.auto_bump_port;
-    run_opts.port_bump_attempts = opts
-        .port_bump_attempts
-        .unwrap_or(run_opts.port_bump_attempts);
+    if let Some(ref expected) = opts.expected_port {
+        run_opts.port.get_or_insert_with(Default::default).expect = expected.clone();
+    }
+    if let Some(bump) = opts.auto_bump_port {
+        run_opts.port.get_or_insert_with(Default::default).bump = bump;
+    }
     Ok(run_opts)
 }
 
@@ -495,10 +493,7 @@ impl IpcClient {
         let ready_cmd = opts.cmd.clone();
         let expected_port = opts.expected_port.clone();
         let auto_bump_port = opts.auto_bump_port;
-        let port_bump_attempts = opts
-            .port_bump_attempts
-            .unwrap_or_else(|| settings().default_port_bump_attempts());
-        let retry = opts.retry.unwrap_or(0);
+        let retry = opts.retry.unwrap_or_default();
         let shell_pid = opts.shell_pid;
 
         tokio::spawn(async move {
@@ -507,16 +502,17 @@ impl IpcClient {
                 cmd,
                 force,
                 shell_pid,
-                dir,
+                dir: crate::config_types::Dir(dir),
                 retry,
                 ready_delay: delay.or(Some(3)),
                 ready_output: output,
                 ready_http: http,
                 ready_port: port,
                 ready_cmd,
-                expected_port: expected_port.unwrap_or_default(),
-                auto_bump_port,
-                port_bump_attempts,
+                port: crate::config_types::PortConfig::from_parts(
+                    expected_port.unwrap_or_default(),
+                    auto_bump_port.unwrap_or_default(),
+                ),
                 wait_ready: true,
                 env,
                 watch: vec![],
@@ -667,18 +663,17 @@ impl IpcClient {
             cmd,
             shell_pid: opts.shell_pid,
             force: opts.force,
-            dir,
-            retry: opts.retry.unwrap_or(0),
+            dir: crate::config_types::Dir(dir),
+            retry: opts.retry.unwrap_or_default(),
             ready_delay: opts.delay.or(Some(3)),
             ready_output: opts.output,
             ready_http: opts.http,
             ready_port: opts.port,
             ready_cmd: opts.cmd.clone(),
-            expected_port: opts.expected_port.unwrap_or_default(),
-            auto_bump_port: opts.auto_bump_port,
-            port_bump_attempts: opts
-                .port_bump_attempts
-                .unwrap_or_else(|| settings().default_port_bump_attempts()),
+            port: crate::config_types::PortConfig::from_parts(
+                opts.expected_port.unwrap_or_default(),
+                opts.auto_bump_port.unwrap_or_default(),
+            ),
             wait_ready: true,
             mise: None,
             slug: None,

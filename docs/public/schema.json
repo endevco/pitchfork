@@ -78,7 +78,7 @@
       "type": "string"
     },
     "OnOutputHook": {
-      "description": "Hook triggered when the daemon produces output matching an optional pattern.\n\nAt most one of `filter` (substring) or `regex` (regular expression) may be\nspecified.  When neither is given the hook fires on every line of output,\nsubject to debouncing.\n\n`debounce` is a humantime duration string (e.g. `\"500ms\"`, `\"2s\"`) that\ncontrols the minimum interval between successive firings. Defaults to\n`\"1000ms\"`.",
+      "description": "Output hook configuration.\n\nAccepts two forms:\n```toml\non_output = \"echo matched\"                              # shorthand (run only)\non_output = { run = \"echo matched\", filter = \"ready\" }  # full\n```",
       "type": "object",
       "properties": {
         "debounce": {
@@ -120,24 +120,27 @@
       ]
     },
     "PitchforkTomlCron": {
-      "description": "Cron scheduling configuration",
-      "type": "object",
-      "properties": {
-        "retrigger": {
-          "description": "Behavior when cron triggers while previous run is still active",
-          "$ref": "#/$defs/CronRetrigger",
-          "default": "finish"
+      "description": "Cron scheduling: a cron expression string, or { schedule, retrigger } object",
+      "oneOf": [
+        {
+          "description": "Cron expression (e.g. '0 * * * *')",
+          "type": "string"
         },
-        "schedule": {
-          "description": "Cron expression (e.g., '0 * * * *' for hourly, '*/5 * * * *' for every 5 minutes)",
-          "type": "string",
-          "examples": [
-            "0 * * * *"
+        {
+          "type": "object",
+          "properties": {
+            "retrigger": {
+              "$ref": "#/$defs/CronRetrigger"
+            },
+            "schedule": {
+              "description": "Cron expression",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schedule"
           ]
         }
-      },
-      "required": [
-        "schedule"
       ]
     },
     "PitchforkTomlDaemon": {
@@ -151,11 +154,6 @@
           "items": {
             "$ref": "#/$defs/PitchforkTomlAuto"
           }
-        },
-        "auto_bump_port": {
-          "description": "Automatically find an available port if the specified port is in use",
-          "type": "boolean",
-          "default": false
         },
         "boot_start": {
           "description": "Whether to start this daemon automatically on system boot",
@@ -211,16 +209,6 @@
             "type": "string"
           }
         },
-        "expected_port": {
-          "description": "TCP ports the daemon is expected to bind to",
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "format": "uint16",
-            "maximum": 65535,
-            "minimum": 0
-          }
-        },
         "hooks": {
           "description": "Lifecycle hooks (on_ready, on_fail, on_retry)",
           "anyOf": [
@@ -250,12 +238,16 @@
             "null"
           ]
         },
-        "port_bump_attempts": {
-          "description": "Maximum number of port bump attempts when auto_bump_port is enabled (default: 10)",
-          "type": "integer",
-          "format": "uint32",
-          "default": 10,
-          "minimum": 0
+        "port": {
+          "description": "Port configuration: expected ports and auto-bump settings",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "ready_cmd": {
           "description": "Shell command to poll for readiness (exit code 0 = ready)",
@@ -310,10 +302,10 @@
           ]
         },
         "stop_signal": {
-          "description": "Unix signal to send for graceful shutdown. Defaults to SIGTERM if unset.\nUseful for daemons that expect SIGINT (ctrl+c) for graceful termination.",
+          "description": "Stop signal and optional per-daemon timeout. Accepts a signal name string\nor `{ signal = \"...\", timeout = \"...\" }` object.",
           "anyOf": [
             {
-              "$ref": "#/$defs/StopSignal"
+              "$ref": "#/$defs/StopConfig"
             },
             {
               "type": "null"
@@ -397,11 +389,63 @@
         }
       }
     },
+    "PortBump": {
+      "description": "Port bump: true = unlimited, false/0 = disabled, number = max attempts",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
+    },
+    "PortConfig": {
+      "description": "Port config: a port number, array of ports, or { expect, bump } object",
+      "oneOf": [
+        {
+          "type": "integer",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bump": {
+              "$ref": "#/$defs/PortBump"
+            },
+            "expect": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "maximum": 65535,
+                "minimum": 0
+              }
+            }
+          }
+        }
+      ]
+    },
     "Retry": {
-      "description": "Retry configuration: `true` = indefinite, `false`/`0` = none, number = count.",
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0
+      "description": "Retry: true = indefinite, false/0 = none, number = count",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
     },
     "SettingsGeneralPartial": {
       "type": "object",
@@ -785,6 +829,29 @@
           ]
         }
       }
+    },
+    "StopConfig": {
+      "description": "Stop signal config: a signal name string, or { signal, timeout } object",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/StopSignal"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "signal": {
+              "$ref": "#/$defs/StopSignal"
+            },
+            "timeout": {
+              "description": "Graceful shutdown timeout (e.g. '500ms', '3s')",
+              "type": "string"
+            }
+          },
+          "required": [
+            "signal"
+          ]
+        }
+      ]
     },
     "StopSignal": {
       "description": "Unix signal for graceful shutdown (e.g. 'SIGTERM', 'SIGINT', 'SIGHUP')",

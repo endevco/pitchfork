@@ -95,9 +95,9 @@ impl Supervisor {
         }
 
         // If wait_ready is true and retry is configured, implement retry loop
-        if opts.wait_ready && opts.retry > 0 {
+        if opts.wait_ready && opts.retry.count() > 0 {
             // Use saturating_add to avoid overflow when retry = u32::MAX (infinite)
-            let max_attempts = opts.retry.saturating_add(1);
+            let max_attempts = opts.retry.count().saturating_add(1);
             for attempt in 0..max_attempts {
                 let mut retry_opts = opts.clone();
                 retry_opts.retry_count = attempt;
@@ -110,7 +110,7 @@ impl Supervisor {
                         return Ok(IpcResponse::DaemonReady { daemon });
                     }
                     IpcResponse::DaemonFailedWithCode { exit_code } => {
-                        if attempt < opts.retry {
+                        if attempt < opts.retry.count() {
                             let backoff_secs = 2u64.pow(attempt);
                             info!(
                                 "daemon {id} failed (attempt {}/{}), retrying in {}s",
@@ -121,7 +121,7 @@ impl Supervisor {
                             fire_hook(
                                 HookType::OnRetry,
                                 id.clone(),
-                                opts.dir.clone(),
+                                opts.dir.0.clone(),
                                 attempt + 1,
                                 opts.env.clone(),
                                 vec![],
@@ -158,12 +158,17 @@ impl Supervisor {
         };
 
         // Check port availability and apply auto-bump if configured
-        let expected_ports = opts.expected_port.clone();
-        let (resolved_ports, effective_ready_port) = if !opts.expected_port.is_empty() {
+        let expected_ports = opts
+            .port
+            .as_ref()
+            .map(|p| p.expect.clone())
+            .unwrap_or_default();
+        let (resolved_ports, effective_ready_port) = if !expected_ports.is_empty() {
+            let port_cfg = opts.port.as_ref().unwrap();
             match check_ports_available(
-                &opts.expected_port,
-                opts.auto_bump_port,
-                opts.port_bump_attempts,
+                &expected_ports,
+                port_cfg.auto_bump(),
+                port_cfg.max_bump_attempts(),
             )
             .await
             {
@@ -173,8 +178,8 @@ impl Supervisor {
                         let bump_offset = resolved
                             .first()
                             .unwrap_or(&0)
-                            .saturating_sub(*opts.expected_port.first().unwrap_or(&0));
-                        if opts.expected_port.contains(&configured_port) && bump_offset > 0 {
+                            .saturating_sub(*expected_ports.first().unwrap_or(&0));
+                        if expected_ports.contains(&configured_port) && bump_offset > 0 {
                             configured_port
                                 .checked_add(bump_offset)
                                 .or(Some(configured_port))
@@ -196,10 +201,7 @@ impl Supervisor {
                         // before the daemon has produced any output.
                         None
                     };
-                    info!(
-                        "daemon {id}: ports {:?} resolved to {:?}",
-                        opts.expected_port, resolved
-                    );
+                    info!("daemon {id}: ports {expected_ports:?} resolved to {resolved:?}");
                     (resolved, ready_port)
                 }
                 Err(e) => {
@@ -345,7 +347,7 @@ impl Supervisor {
                         o.pid = Some(pid);
                         o.status = DaemonStatus::Running;
                         o.shell_pid = opts.shell_pid;
-                        o.dir = Some(opts.dir.clone());
+                        o.dir = Some(opts.dir.0.clone());
                         o.cmd = Some(original_cmd);
                         o.autostop = opts.autostop;
                         o.cron_schedule = opts.cron_schedule.clone();
@@ -357,10 +359,11 @@ impl Supervisor {
                         o.ready_http = opts.ready_http.clone();
                         o.ready_port = effective_ready_port;
                         o.ready_cmd = opts.ready_cmd.clone();
-                        o.expected_port = expected_ports;
+                        o.port = crate::config_types::PortConfig::from_parts(
+                            expected_ports,
+                            opts.port.as_ref().map(|p| p.bump).unwrap_or_default(),
+                        );
                         o.resolved_port = resolved_ports;
-                        o.auto_bump_port = Some(opts.auto_bump_port);
-                        o.port_bump_attempts = Some(opts.port_bump_attempts);
                         o.depends = Some(opts.depends.clone());
                         o.env = opts.env.clone();
                         o.watch = Some(opts.watch.clone());
@@ -382,7 +385,7 @@ impl Supervisor {
         let ready_http = opts.ready_http.clone();
         let ready_port = effective_ready_port;
         let ready_cmd = opts.ready_cmd.clone();
-        let daemon_dir = opts.dir.clone();
+        let daemon_dir = opts.dir.0.clone();
         let hook_retry_count = opts.retry_count;
         let hook_retry = opts.retry;
         let hook_daemon_env = opts.env.clone();
@@ -392,7 +395,7 @@ impl Supervisor {
         // When the proxy is enabled, only detect active_port for daemons that are
         // actually referenced by a registered slug, rather than blanket-polling every
         // daemon (which wastes ~7.5 s of listeners::get_all() calls per port-less daemon).
-        let has_port_config = !opts.expected_port.is_empty()
+        let has_port_config = opts.port.as_ref().is_some_and(|p| !p.expect.is_empty())
             || (settings().proxy.enable && is_daemon_slug_target(id));
         let daemon_pid = pid;
 
@@ -945,7 +948,7 @@ impl Supervisor {
                 "stop" => vec![HookType::OnStop, HookType::OnExit],
                 "exit" => vec![HookType::OnExit],
                 // "fail": fire on_fail + on_exit only when retries are exhausted
-                _ if hook_retry_count >= hook_retry => {
+                _ if hook_retry_count >= hook_retry.count() => {
                     vec![HookType::OnFail, HookType::OnExit]
                 }
                 _ => vec![],
@@ -1013,8 +1016,12 @@ impl Supervisor {
 
                     // Kill the entire process group atomically (daemon PID == PGID
                     // because we called setsid() at spawn time)
-                    let stop_signal: i32 = daemon.stop_signal.unwrap_or_default().into();
-                    if let Err(e) = PROCS.kill_process_group_async(pid, stop_signal).await {
+                    let stop_cfg = daemon.stop_signal.unwrap_or_default();
+                    let stop_signal: i32 = stop_cfg.signal.into();
+                    if let Err(e) = PROCS
+                        .kill_process_group_async(pid, stop_signal, stop_cfg.timeout)
+                        .await
+                    {
                         debug!("failed to kill pid {pid}: {e}");
                         // Check if the process is actually stopped despite the error
                         PROCS.refresh_processes();
@@ -1439,7 +1446,11 @@ fn detect_and_store_active_port(id: DaemonId, pid: u32) {
                         debug!("daemon {id}: aborting active_port detection — process exited");
                         return;
                     }
-                    Some(d) => d.expected_port.first().copied().filter(|&p| p > 0),
+                    Some(d) => d
+                        .port
+                        .as_ref()
+                        .and_then(|p| p.expect.first().copied())
+                        .filter(|&p| p > 0),
                     None => None,
                 }
             };

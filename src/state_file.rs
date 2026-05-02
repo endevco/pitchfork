@@ -249,6 +249,7 @@ fn normalized_lock_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::daemon_status::DaemonStatus;
+    use crate::pitchfork_toml::Retry;
 
     #[test]
     fn test_state_file_toml_roundtrip_stopped() {
@@ -269,16 +270,14 @@ mod tests {
                 cron_retrigger: None,
                 last_cron_triggered: None,
                 last_exit_success: Some(true),
-                retry: 0,
+                retry: Retry::default(),
                 retry_count: 0,
                 ready_delay: None,
                 ready_output: None,
                 ready_http: None,
                 ready_port: None,
                 ready_cmd: None,
-                expected_port: vec![],
-                auto_bump_port: false,
-                port_bump_attempts: 0,
+                port: None,
                 resolved_port: vec![],
                 depends: vec![],
                 env: None,
