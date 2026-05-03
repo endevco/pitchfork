@@ -111,7 +111,7 @@ impl Supervisor {
                     }
                     IpcResponse::DaemonFailedWithCode { exit_code } => {
                         if attempt < opts.retry.count() {
-                            let backoff_secs = 2u64.pow(attempt);
+                            let backoff_secs = 2u64.saturating_pow(attempt).min(3600);
                             info!(
                                 "daemon {id} failed (attempt {}/{}), retrying in {}s",
                                 attempt + 1,
@@ -283,12 +283,63 @@ impl Supervisor {
             }
         };
         info!("run: spawning daemon {id} with args: {args:?}");
+
+        // Allocate PTY if configured
+        #[cfg(unix)]
+        let pty_pair = if opts.pty.unwrap_or(false) {
+            match super::pty::openpty() {
+                Ok(pair) => {
+                    info!("daemon {id}: allocated PTY (pty = true)");
+                    Some(pair)
+                }
+                Err(e) => {
+                    warn!("daemon {id}: failed to allocate PTY, falling back to pipes: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(&args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .current_dir(&opts.dir);
+
+        #[cfg(unix)]
+        if let Some(ref pair) = pty_pair {
+            // PTY mode: connect both stdout and stderr to the slave PTY.
+            // The child uses the slave for stdin/stdout/stderr, and we read
+            // output from the master.
+            let slave_file = std::fs::File::from(
+                pair.slave
+                    .try_clone()
+                    .map_err(|e| miette::miette!("failed to dup slave PTY fd: {e}"))?,
+            );
+            cmd.stdin(std::process::Stdio::from(slave_file.try_clone().map_err(
+                |e| miette::miette!("failed to clone slave PTY fd for stdin: {e}"),
+            )?));
+            cmd.stdout(std::process::Stdio::from(slave_file.try_clone().map_err(
+                |e| miette::miette!("failed to clone slave PTY fd for stdout: {e}"),
+            )?));
+            cmd.stderr(std::process::Stdio::from(slave_file));
+        } else {
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+        }
+
+        #[cfg(not(unix))]
+        {
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+        }
+
+        cmd.args(&args).current_dir(&opts.dir);
+
+        #[cfg(unix)]
+        if pty_pair.is_none() {
+            cmd.stdin(std::process::Stdio::null());
+        }
+
+        #[cfg(not(unix))]
+        cmd.stdin(std::process::Stdio::null());
 
         // Ensure daemon can find user tools by using the original PATH
         if let Some(ref path) = *env::ORIGINAL_PATH {
@@ -320,9 +371,27 @@ impl Supervisor {
         #[cfg(unix)]
         {
             let run_identity = run_identity.clone();
+            let use_pty = pty_pair.is_some();
             unsafe {
                 cmd.pre_exec(move || {
                     nix::unistd::setsid().map_err(nix_to_io_error)?;
+
+                    // When using a PTY, set the slave as the controlling terminal.
+                    // The slave FD has already been dup'd onto stdin/stdout/stderr
+                    // by tokio, so we can use stdin (fd 0) for TIOCSCTTY.
+                    if use_pty {
+                        let ret = libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0);
+                        if ret < 0 {
+                            // Non-fatal: the process can still run without
+                            // a controlling terminal.
+                            #[cfg(target_os = "linux")]
+                            eprintln!(
+                                "pitchfork: TIOCSCTTY failed: {}",
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    }
+
                     apply_run_identity(&run_identity)?;
                     Ok(())
                 });
@@ -374,6 +443,7 @@ impl Supervisor {
                         o.memory_limit = opts.memory_limit;
                         o.cpu_limit = opts.cpu_limit;
                         o.stop_signal = opts.stop_signal;
+                        o.pty = opts.pty;
                     })
                     .build(),
             )
@@ -399,17 +469,86 @@ impl Supervisor {
             || (settings().proxy.enable && is_daemon_slug_target(id));
         let daemon_pid = pid;
 
+        // Prepare output readers before spawning the monitoring task.
+        // In PTY mode, we read from the PTY master FD.
+        // In pipe mode, we read from separate stdout/stderr pipes.
+        #[cfg(unix)]
+        let pty_reader = pty_pair.map(|p| {
+            tokio::io::BufReader::new(tokio::fs::File::from_std(std::fs::File::from(p.master)))
+                .lines()
+        });
+        #[cfg(not(unix))]
+        let pty_reader: Option<tokio::io::Lines<tokio::io::BufReader<tokio::fs::File>>> = None;
+        let stdout_reader = if pty_reader.is_none() {
+            child
+                .stdout
+                .take()
+                .map(|s| tokio::io::BufReader::new(s).lines())
+        } else {
+            None
+        };
+        let stderr_reader = if pty_reader.is_none() {
+            child
+                .stderr
+                .take()
+                .map(|s| tokio::io::BufReader::new(s).lines())
+        } else {
+            None
+        };
+
+        if pty_reader.is_none() && (stdout_reader.is_none() || stderr_reader.is_none()) {
+            error!("Failed to capture stdout/stderr for daemon {id}");
+        }
+
         tokio::spawn(async move {
             let id = id_clone;
-            let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
-                (Some(out), Some(err)) => (out, err),
-                _ => {
-                    error!("Failed to capture stdout/stderr for daemon {id}");
-                    return;
+
+            // Merge all output sources (PTY master OR stdout+stderr) into a single channel.
+            let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(256);
+
+            if let Some(mut reader) = pty_reader {
+                // PTY mode: single merged stream from the master.
+                // output_tx is moved into the spawn; when the reader ends the
+                // channel closes automatically.
+                tokio::spawn(async move {
+                    while let Ok(Some(mut line)) = reader.next_line().await {
+                        // PTY slave uses ONLCR: \n → \r\n; strip the trailing \r.
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                        if output_tx.send(line).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            } else {
+                // Pipe mode: stdout and stderr are merged into the same channel.
+                // Both `ready_output` and `on_output_hook` patterns match against
+                // lines from either stream, which is the expected behavior (a
+                // "server ready" message may appear on stderr in some tools).
+                if let Some(mut stdout) = stdout_reader {
+                    let tx = output_tx.clone();
+                    tokio::spawn(async move {
+                        while let Ok(Some(line)) = stdout.next_line().await {
+                            if tx.send(line).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
                 }
-            };
-            let mut stdout = tokio::io::BufReader::new(stdout).lines();
-            let mut stderr = tokio::io::BufReader::new(stderr).lines();
+                if let Some(mut stderr) = stderr_reader {
+                    let tx = output_tx.clone();
+                    tokio::spawn(async move {
+                        while let Ok(Some(line)) = stderr.next_line().await {
+                            if tx.send(line).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+                // Drop the last sender so the channel closes when all readers finish.
+                drop(output_tx);
+            }
             let log_file = match tokio::fs::File::options()
                 .append(true)
                 .create(true)
@@ -426,11 +565,12 @@ impl Supervisor {
 
             let now = || chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             let format_line = |line: String| {
-                if line.starts_with(&format!("{id} ")) {
+                let line_for_log = line;
+                if line_for_log.starts_with(&format!("{id} ")) {
                     // mise tasks often already have the id printed
-                    format!("{} {line}\n", now())
+                    format!("{} {line_for_log}\n", now())
                 } else {
-                    format!("{} {id} {line}\n", now())
+                    format!("{} {id} {line_for_log}\n", now())
                 }
             };
 
@@ -571,58 +711,21 @@ impl Supervisor {
 
             loop {
                 select! {
-                                Ok(Some(line)) = stdout.next_line() => {
-                                    let formatted = format_line(line.clone());
-                                    if let Err(e) = log_appender.write_all(formatted.as_bytes()).await {
-                                        error!("Failed to write to log for daemon {id}: {e}");
-                                    }
-                                    trace!("stdout: {id} {formatted}");
-
-                        // Check if output matches ready pattern
-                        if !ready_notified
-                            && let Some(ref pattern) = ready_pattern
-                            && pattern.is_match(&line)
-                        {
-                            info!("daemon {id} ready: output matched pattern");
-                            ready_notified = true;
-                            let _ = log_appender.flush().await;
-                            if let Some(tx) = ready_tx.take() {
-                                let _ = tx.send(Ok(()));
-                            }
-                            fire_hook(HookType::OnReady, id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), vec![]).await;
-                            if !active_port_spawned && has_port_config {
-                                active_port_spawned = true;
-                                detect_and_store_active_port(id.clone(), daemon_pid);
-                            }
-                        }
-
-                        // Check on_output hook
-                        if let Some(ref hook) = on_output_hook {
-                            let matched = match (&hook.filter, &on_output_pattern) {
-                                (Some(substr), _) => line.contains(substr.as_str()),
-                                (None, Some(re)) => re.is_match(&line),
-                                (None, None) => true,
-                            };
-                            if matched {
-                                let now = std::time::Instant::now();
-                                let elapsed = on_output_last_fired.map(|t| now.duration_since(t));
-                                if elapsed.is_none_or(|e| e >= on_output_debounce) {
-                                    on_output_last_fired = Some(now);
-                                    hooks::fire_output_hook(id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), hook.run.clone(), line.clone()).await;
-                                }
-                            }
-                        }
-                    }
-                    Ok(Some(line)) = stderr.next_line() => {
+                    Some(line) = output_rx.recv() => {
                         let formatted = format_line(line.clone());
                         if let Err(e) = log_appender.write_all(formatted.as_bytes()).await {
                             error!("Failed to write to log for daemon {id}: {e}");
                         }
-                        trace!("stderr: {id} {formatted}");
+                        trace!("output: {id} {formatted}");
 
+                        // Strip ANSI for pattern matching so user-written patterns
+                        // work regardless of whether the process emits color codes.
+                        let line_clean = console::strip_ansi_codes(&line).to_string();
+
+                        // Check if output matches ready pattern
                         if !ready_notified
                             && let Some(ref pattern) = ready_pattern
-                            && pattern.is_match(&line)
+                            && pattern.is_match(&line_clean)
                         {
                             info!("daemon {id} ready: output matched pattern");
                             ready_notified = true;
@@ -640,8 +743,8 @@ impl Supervisor {
                         // Check on_output hook
                         if let Some(ref hook) = on_output_hook {
                             let matched = match (&hook.filter, &on_output_pattern) {
-                                (Some(substr), _) => line.contains(substr.as_str()),
-                                (None, Some(re)) => re.is_match(&line),
+                                (Some(substr), _) => line_clean.contains(substr.as_str()),
+                                (None, Some(re)) => re.is_match(&line_clean),
                                 (None, None) => true,
                             };
                             if matched {
@@ -649,11 +752,11 @@ impl Supervisor {
                                 let elapsed = on_output_last_fired.map(|t| now.duration_since(t));
                                 if elapsed.is_none_or(|e| e >= on_output_debounce) {
                                     on_output_last_fired = Some(now);
-                                    hooks::fire_output_hook(id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), hook.run.clone(), line.clone()).await;
+                                    hooks::fire_output_hook(id.clone(), daemon_dir.clone(), hook_retry_count, hook_daemon_env.clone(), hook.run.clone(), line_clean.clone()).await;
                                 }
                             }
                         }
-                    },
+                    }
                     Some(result) = exit_rx.recv() => {
                         // Process exited - save exit status and notify if not ready yet
                         exit_status = Some(result);

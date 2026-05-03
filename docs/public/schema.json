@@ -78,7 +78,7 @@
       "type": "string"
     },
     "OnOutputHook": {
-      "description": "Output hook configuration.\n\nAccepts two forms:\n```toml\non_output = \"echo matched\"                              # shorthand (run only)\non_output = { run = \"echo matched\", filter = \"ready\" }  # full\n```",
+      "description": "Output hook configuration.\n\nAccepts two forms:\n```toml\non_output = \"echo matched\"                              # shorthand (run only)\non_output = { run = \"echo matched\", filter = \"ready\" }  # full\n```\n\nPattern matching (`filter` / `regex`) is performed against ANSI-stripped\noutput and covers both stdout and stderr.",
       "type": "object",
       "properties": {
         "debounce": {
@@ -249,6 +249,13 @@
             }
           ]
         },
+        "pty": {
+          "description": "Allocate a pseudo-terminal for the daemon process.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "ready_cmd": {
           "description": "Shell command to poll for readiness (exit code 0 = ready)",
           "type": [
@@ -273,7 +280,7 @@
           ]
         },
         "ready_output": {
-          "description": "Regex pattern to match in stdout/stderr to determine readiness",
+          "description": "Regex pattern to match in ANSI-stripped stdout/stderr to determine readiness",
           "type": [
             "string",
             "null"

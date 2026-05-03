@@ -23,7 +23,7 @@ use std::path::PathBuf;
 /// Options for upserting a daemon's state.
 ///
 /// Use `UpsertDaemonOpts::builder(id)` to create, then set fields directly and call `.build()`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct UpsertDaemonOpts {
     pub id: DaemonId,
     pub pid: Option<u32>,
@@ -66,6 +66,8 @@ pub(crate) struct UpsertDaemonOpts {
     pub cpu_limit: Option<CpuLimit>,
     /// Unix signal to send for graceful shutdown
     pub stop_signal: Option<StopConfig>,
+    /// Allocate a pseudo-terminal for the daemon process
+    pub pty: Option<bool>,
 }
 
 /// Builder for UpsertDaemonOpts - ensures daemon ID is always provided.
@@ -90,37 +92,7 @@ impl UpsertDaemonOpts {
         UpsertDaemonOptsBuilder {
             opts: UpsertDaemonOpts {
                 id,
-                pid: None,
-                status: DaemonStatus::default(),
-                shell_pid: None,
-                dir: None,
-                cmd: None,
-                autostop: false,
-                cron_schedule: None,
-                cron_retrigger: None,
-                last_exit_success: None,
-                retry: None,
-                retry_count: None,
-                ready_delay: None,
-                ready_output: None,
-                ready_http: None,
-                ready_port: None,
-                ready_cmd: None,
-                port: None,
-                resolved_port: Vec::new(),
-                active_port: None,
-                slug: None,
-                proxy: None,
-                depends: None,
-                env: None,
-                watch: None,
-                watch_mode: None,
-                watch_base_dir: None,
-                mise: None,
-                user: None,
-                memory_limit: None,
-                cpu_limit: None,
-                stop_signal: None,
+                ..Default::default()
             },
         }
     }
@@ -220,6 +192,7 @@ impl Supervisor {
             memory_limit: opts.memory_limit.or(existing.and_then(|d| d.memory_limit)),
             cpu_limit: opts.cpu_limit.or(existing.and_then(|d| d.cpu_limit)),
             stop_signal: opts.stop_signal.or(existing.and_then(|d| d.stop_signal)),
+            pty: opts.pty.or(existing.and_then(|d| d.pty)),
         };
         state_file.daemons.insert(opts.id.clone(), daemon.clone());
         if let Err(err) = state_file.write() {

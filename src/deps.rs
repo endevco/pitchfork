@@ -253,31 +253,11 @@ mod tests {
     fn make_daemon(depends: Vec<&str>) -> PitchforkTomlDaemon {
         PitchforkTomlDaemon {
             run: "echo test".to_string(),
-            auto: vec![],
-            cron: None,
-            retry: Retry::default(),
-            ready_delay: None,
-            ready_output: None,
-            ready_http: None,
-            ready_port: None,
-            ready_cmd: None,
-            port: None,
-            boot_start: None,
             depends: depends
                 .into_iter()
                 .map(|s| DaemonId::new("global", s))
                 .collect(),
-            watch: vec![],
-            watch_mode: crate::pitchfork_toml::WatchMode::default(),
-            dir: None,
-            env: None,
-            hooks: None,
-            path: None,
-            mise: None,
-            user: None,
-            memory_limit: None,
-            cpu_limit: None,
-            stop_signal: None,
+            ..Default::default()
         }
     }
 

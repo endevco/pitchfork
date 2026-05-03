@@ -575,6 +575,9 @@ pub enum PitchforkTomlAuto {
 /// on_output = "echo matched"                              # shorthand (run only)
 /// on_output = { run = "echo matched", filter = "ready" }  # full
 /// ```
+///
+/// Pattern matching (`filter` / `regex`) is performed against ANSI-stripped
+/// output and covers both stdout and stderr.
 #[derive(Debug, Clone, JsonSchema)]
 pub struct OnOutputHook {
     /// Command to run when the output condition is met

@@ -404,7 +404,7 @@ impl EditorState {
             FormField::optional_text(
                 "ready_output",
                 "Ready Output Pattern",
-                "Regex pattern in stdout/stderr indicating readiness.",
+                "Regex pattern in ANSI-stripped stdout/stderr indicating readiness.",
             ),
             FormField::optional_text(
                 "ready_http",

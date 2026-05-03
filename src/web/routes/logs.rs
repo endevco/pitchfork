@@ -16,6 +16,7 @@ use crate::settings::settings;
 use crate::state_file::StateFile;
 use crate::web::bp;
 use crate::web::helpers::{html_escape, url_encode};
+use console;
 use std::io::{Read, Seek, SeekFrom};
 
 fn base_html(title: &str, content: &str) -> String {
@@ -139,7 +140,8 @@ pub async fn index() -> Html<String> {
                         } else {
                             0
                         };
-                        html_escape(&lines[start..].join("\n"))
+                        let stripped = lines[start..].join("\n");
+                        html_escape(&console::strip_ansi_codes(&stripped))
                     }
                     Err(_) => String::new(),
                 }
@@ -583,7 +585,8 @@ pub async fn stream_sse(
                     match output.result {
                         Some(FileOpResult::Data(buffer)) => {
                             let new_content = String::from_utf8_lossy(&buffer);
-                            let escaped = html_escape(&new_content);
+                            let stripped = console::strip_ansi_codes(&new_content);
+                            let escaped = html_escape(&stripped);
                             yield Ok(Event::default().event("message").data(escaped));
                         }
                         Some(FileOpResult::Truncated) => {
