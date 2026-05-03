@@ -149,6 +149,23 @@ impl TestEnv {
         fs::read_to_string(self.log_path(daemon_id)).unwrap_or_default()
     }
 
+    /// Poll the log file for a daemon until it contains `needle` or `timeout` elapses.
+    /// Returns the final log contents (which may not contain `needle` if it timed out —
+    /// callers should still assert on the result so failures point at the missing content).
+    pub fn wait_for_logs(&self, daemon_id: &str, needle: &str, timeout: Duration) -> String {
+        let start = std::time::Instant::now();
+        loop {
+            let logs = self.read_logs(daemon_id);
+            if logs.contains(needle) {
+                return logs;
+            }
+            if start.elapsed() >= timeout {
+                return logs;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Get log file path for a daemon
     pub fn log_path(&self, daemon_id: &str) -> PathBuf {
         // If the ID doesn't contain a namespace, assume it's from the project directory
