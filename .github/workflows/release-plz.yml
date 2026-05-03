@@ -68,8 +68,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
+          body=$(gh release view "$TAG" --json body --jq .body)
+          if grep -qiE '^##.*Sponsor pitchfork' <<<"$body"; then
+            echo "Sponsor section already present in $TAG release notes; skipping append."
+            exit 0
+          fi
           {
-            gh release view "$TAG" --json body --jq .body
+            printf '%s\n' "$body"
             cat <<'EOF'
 
           ## 💚 Sponsor pitchfork
