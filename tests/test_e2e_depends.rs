@@ -103,10 +103,11 @@ ready_delay = 1
     );
     assert!(list_stdout.contains("api"), "api daemon should be running");
 
-    // Verify logs exist for all (confirms they were started)
-    let db_logs = env.read_logs("database");
-    let backend_logs = env.read_logs("backend");
-    let api_logs = env.read_logs("api");
+    // Verify logs exist for all (confirms they were started). Poll because the
+    // child shell's echo can take a beat to flush after the start command returns.
+    let db_logs = env.wait_for_logs("database", "database started", Duration::from_secs(5));
+    let backend_logs = env.wait_for_logs("backend", "backend started", Duration::from_secs(5));
+    let api_logs = env.wait_for_logs("api", "api started", Duration::from_secs(5));
 
     assert!(
         db_logs.contains("database started"),
