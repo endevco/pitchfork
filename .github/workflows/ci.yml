@@ -41,3 +41,42 @@ jobs:
       # Integration tests under tests/ are Unix-only (lsof, pkill, etc.) so
       # we limit the check to lib + bins.
       - run: cargo check --lib --bins --all-features
+
+  # Aggregator that required-status-checks can target. If any upstream job
+  # failed, was cancelled, or was skipped, this step exits non-zero so the PR is
+  # blocked. Lets the branch-protection rule depend on one name instead of N.
+  final:
+    needs:
+      - ci
+      - windows-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # Run on success or upstream failure but skip when the workflow is cancelled
+    # — `always()` would override `cancel-in-progress` and waste a runner.
+    if: ${{ !cancelled() }}
+    steps:
+      - name: Gate on upstream job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = False
+          for name, data in sorted(needs.items()):
+              result = data.get("result", "unknown")
+              if result == "success":
+                  print(f"::notice::{name}: {result}")
+              else:
+                  print(f"::error::{name}: {result}")
+                  failed = True
+
+          if failed:
+              print("One or more upstream jobs did not complete successfully.")
+              sys.exit(1)
+
+          print("All CI jobs completed successfully.")
+          PY
