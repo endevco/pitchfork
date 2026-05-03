@@ -12,6 +12,7 @@ mod autostop;
 mod hooks;
 mod ipc_handlers;
 mod lifecycle;
+mod pty;
 mod retry;
 mod state;
 mod watchers;

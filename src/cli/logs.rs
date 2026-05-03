@@ -5,6 +5,7 @@ use crate::ui::style::edim;
 use crate::watch_files::WatchFiles;
 use crate::{Result, env};
 use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+use console;
 use itertools::Itertools;
 use miette::IntoDiagnostic;
 use notify::RecursiveMode;
@@ -54,7 +55,19 @@ impl PagerConfig {
 
 /// Format a single log line for output.
 /// When `single_daemon` is true, omits the daemon ID from the output.
-fn format_log_line(date: &str, id: &str, msg: &str, single_daemon: bool) -> String {
+/// When `strip_ansi` is true, strips ANSI escape codes from the message.
+fn format_log_line(
+    date: &str,
+    id: &str,
+    msg: &str,
+    single_daemon: bool,
+    strip_ansi: bool,
+) -> String {
+    let msg = if strip_ansi {
+        console::strip_ansi_codes(msg).to_string()
+    } else {
+        msg.to_string()
+    };
     if single_daemon {
         format!("{} {}", edim(date), msg)
     } else {
@@ -458,9 +471,16 @@ impl Logs {
             return Ok(());
         }
 
+        let strip_ansi = raw || !console::colors_enabled();
+
         // Raw mode: output without formatting and without pager
         if raw {
             for (date, id, msg) in log_lines {
+                let msg = if strip_ansi {
+                    console::strip_ansi_codes(&msg).to_string()
+                } else {
+                    msg
+                };
                 if single_daemon {
                     println!("{date} {msg}");
                 } else {
@@ -473,10 +493,13 @@ impl Logs {
         let use_pager = !self.no_pager && should_use_pager(log_lines.len());
 
         if use_pager {
-            self.output_with_pager(log_lines, single_daemon, has_time_filter)?;
+            self.output_with_pager(log_lines, single_daemon, has_time_filter, strip_ansi)?;
         } else {
             for (date, id, msg) in log_lines {
-                println!("{}", format_log_line(&date, &id, &msg, single_daemon));
+                println!(
+                    "{}",
+                    format_log_line(&date, &id, &msg, single_daemon, strip_ansi)
+                );
             }
         }
 
@@ -488,6 +511,7 @@ impl Logs {
         log_lines: Vec<(String, String, String)>,
         single_daemon: bool,
         has_time_filter: bool,
+        strip_ansi: bool,
     ) -> Result<()> {
         // When time filter is used, start at top; otherwise start at end
         let pager_config = PagerConfig::new(!has_time_filter);
@@ -496,8 +520,10 @@ impl Logs {
             Ok(mut child) => {
                 if let Some(stdin) = child.stdin.as_mut() {
                     for (date, id, msg) in log_lines {
-                        let line =
-                            format!("{}\n", format_log_line(&date, &id, &msg, single_daemon));
+                        let line = format!(
+                            "{}\n",
+                            format_log_line(&date, &id, &msg, single_daemon, strip_ansi)
+                        );
                         if stdin.write_all(line.as_bytes()).is_err() {
                             break;
                         }
@@ -506,14 +532,20 @@ impl Logs {
                 } else {
                     debug!("Failed to get pager stdin, falling back to direct output");
                     for (date, id, msg) in log_lines {
-                        println!("{}", format_log_line(&date, &id, &msg, single_daemon));
+                        println!(
+                            "{}",
+                            format_log_line(&date, &id, &msg, single_daemon, strip_ansi)
+                        );
                     }
                 }
             }
             Err(e) => {
                 debug!("Failed to spawn pager: {e}, falling back to direct output");
                 for (date, id, msg) in log_lines {
-                    println!("{}", format_log_line(&date, &id, &msg, single_daemon));
+                    println!(
+                        "{}",
+                        format_log_line(&date, &id, &msg, single_daemon, strip_ansi)
+                    );
                 }
             }
         }
@@ -527,8 +559,10 @@ impl Logs {
         single_daemon: bool,
         raw: bool,
     ) -> Result<()> {
+        let strip_ansi = raw || !console::colors_enabled();
+
         if !io::stdout().is_terminal() || self.no_pager || self.tail || raw {
-            return self.stream_logs_direct(log_files, single_daemon, raw);
+            return self.stream_logs_direct(log_files, single_daemon, raw, strip_ansi);
         }
 
         let pager_config = PagerConfig::new(true); // start_at_end = true
@@ -542,6 +576,7 @@ impl Logs {
                         .map(|(daemon_id, lf)| (daemon_id.qualified(), lf.path.clone()))
                         .collect();
                     let single_daemon_clone = single_daemon;
+                    let strip_ansi_clone = strip_ansi;
 
                     // Stream logs using a background thread to avoid blocking
                     std::thread::spawn(move || {
@@ -562,7 +597,8 @@ impl Logs {
                                         &timestamp,
                                         name,
                                         &message,
-                                        single_daemon_clone
+                                        single_daemon_clone,
+                                        strip_ansi_clone
                                     )
                                 );
                                 if writer.write_all(output.as_bytes()).is_err() {
@@ -593,7 +629,13 @@ impl Logs {
                         for (timestamp, daemon, message) in merger {
                             let output = format!(
                                 "{}\n",
-                                format_log_line(&timestamp, &daemon, &message, single_daemon_clone)
+                                format_log_line(
+                                    &timestamp,
+                                    &daemon,
+                                    &message,
+                                    single_daemon_clone,
+                                    strip_ansi_clone
+                                )
                             );
                             if writer.write_all(output.as_bytes()).is_err() {
                                 return;
@@ -606,12 +648,12 @@ impl Logs {
                     let _ = child.wait();
                 } else {
                     debug!("Failed to get pager stdin, falling back to direct output");
-                    return self.stream_logs_direct(log_files, single_daemon, raw);
+                    return self.stream_logs_direct(log_files, single_daemon, raw, strip_ansi);
                 }
             }
             Err(e) => {
                 debug!("Failed to spawn pager: {e}, falling back to direct output");
-                return self.stream_logs_direct(log_files, single_daemon, raw);
+                return self.stream_logs_direct(log_files, single_daemon, raw, strip_ansi);
             }
         }
 
@@ -623,6 +665,7 @@ impl Logs {
         log_files: &BTreeMap<DaemonId, LogFile>,
         single_daemon: bool,
         raw: bool,
+        strip_ansi: bool,
     ) -> Result<()> {
         // Fast path for single daemon: directly output file content without parsing
         // This avoids expensive regex parsing for each line in large log files
@@ -637,10 +680,15 @@ impl Logs {
             };
             let reader = BufReader::new(file);
             if raw {
-                // Raw mode: output lines as-is
+                // Raw mode: output lines as-is (but strip ansi if colors disabled)
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
+                            let l = if strip_ansi {
+                                console::strip_ansi_codes(&l).to_string()
+                            } else {
+                                l
+                            };
                             if io::stdout().write_all(l.as_bytes()).is_err()
                                 || io::stdout().write_all(b"\n").is_err()
                             {
@@ -660,7 +708,8 @@ impl Logs {
                             &timestamp,
                             &daemon_id.qualified(),
                             &message,
-                            single_daemon
+                            single_daemon,
+                            strip_ansi
                         )
                     );
                     if io::stdout().write_all(output.as_bytes()).is_err() {
@@ -692,6 +741,11 @@ impl Logs {
         // Stream merged entries to stdout
         for (timestamp, daemon, message) in merger {
             let output = if raw {
+                let message = if strip_ansi {
+                    console::strip_ansi_codes(&message).to_string()
+                } else {
+                    message
+                };
                 if single_daemon {
                     format!("{timestamp} {message}\n")
                 } else {
@@ -700,7 +754,7 @@ impl Logs {
             } else {
                 format!(
                     "{}\n",
-                    format_log_line(&timestamp, &daemon, &message, single_daemon)
+                    format_log_line(&timestamp, &daemon, &message, single_daemon, strip_ansi)
                 )
             };
             if io::stdout().write_all(output.as_bytes()).is_err() {

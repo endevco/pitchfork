@@ -120,6 +120,9 @@ struct PitchforkTomlDaemonRaw {
     /// Unix signal to send for graceful shutdown (default: SIGTERM)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stop_signal: Option<StopConfig>,
+    /// Allocate a pseudo-terminal for the daemon process.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pty: Option<bool>,
 }
 
 /// Configuration schema for pitchfork.toml daemon supervisor configuration files.
@@ -801,12 +804,17 @@ impl PitchforkToml {
             }
 
             // Resolve port config: prefer new `port` field, fall back to deprecated fields
-            let port = if let Some(port) = raw_daemon.port {
-                Some(port)
-            } else if !raw_daemon.expected_port.is_empty()
+            let has_deprecated = !raw_daemon.expected_port.is_empty()
                 || raw_daemon.auto_bump_port.is_some()
-                || raw_daemon.port_bump_attempts.is_some()
-            {
+                || raw_daemon.port_bump_attempts.is_some();
+            let port = if let Some(port) = raw_daemon.port {
+                if has_deprecated {
+                    warn!(
+                        "daemon {short_name}: both `port` and deprecated expected_port/auto_bump_port/port_bump_attempts are set; ignoring deprecated fields"
+                    );
+                }
+                Some(port)
+            } else if has_deprecated {
                 warn!(
                     "daemon {short_name}: expected_port/auto_bump_port/port_bump_attempts are deprecated, use [daemons.{short_name}.port] instead"
                 );
@@ -850,6 +858,7 @@ impl PitchforkToml {
                 memory_limit: raw_daemon.memory_limit,
                 cpu_limit: raw_daemon.cpu_limit,
                 stop_signal: raw_daemon.stop_signal,
+                pty: raw_daemon.pty,
                 path: Some(path.to_path_buf()),
             };
             pt.daemons.insert(id, daemon);
@@ -972,6 +981,7 @@ impl PitchforkToml {
                     memory_limit: daemon.memory_limit,
                     cpu_limit: daemon.cpu_limit,
                     stop_signal: daemon.stop_signal,
+                    pty: daemon.pty,
                 };
                 raw.daemons.insert(id.name().to_string(), raw_daemon);
             }
@@ -1117,7 +1127,7 @@ pub struct PitchforkTomlDaemon {
     pub retry: Retry,
     /// Delay in seconds before considering the daemon ready
     pub ready_delay: Option<u64>,
-    /// Regex pattern to match in stdout/stderr to determine readiness
+    /// Regex pattern to match in ANSI-stripped stdout/stderr to determine readiness
     pub ready_output: Option<String>,
     /// HTTP URL to poll for readiness (expects 2xx response)
     pub ready_http: Option<String>,
@@ -1163,6 +1173,8 @@ pub struct PitchforkTomlDaemon {
     /// Stop signal and optional per-daemon timeout. Accepts a signal name string
     /// or `{ signal = "...", timeout = "..." }` object.
     pub stop_signal: Option<StopConfig>,
+    /// Allocate a pseudo-terminal for the daemon process.
+    pub pty: Option<bool>,
     #[schemars(skip)]
     pub path: Option<PathBuf>,
 }
@@ -1214,6 +1226,7 @@ impl PitchforkTomlDaemon {
             cpu_limit: self.cpu_limit,
             stop_signal: self.stop_signal,
             on_output_hook: self.hooks.as_ref().and_then(|h| h.on_output.clone()),
+            pty: self.pty,
         }
     }
 }

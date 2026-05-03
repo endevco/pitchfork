@@ -14,8 +14,8 @@ teardown() {
   assert_success
 
   run cat pitchfork.toml
-  assert_output --partial 'expected_port = [8080]'
-  assert_output --partial 'bump'
+  assert_output --partial 'expect = [8080]'
+  assert_output --partial 'bump = 10'
 }
 
 @test "config add with only port" {
@@ -23,8 +23,7 @@ teardown() {
   assert_success
   
   run cat pitchfork.toml
-  assert_output --partial 'expected_port = [3000]'
-  refute_output --partial 'bump'
+  assert_output --partial 'port = 3000'
 }
 
 @test "start with --expected-port flag" {

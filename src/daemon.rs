@@ -140,6 +140,9 @@ pub struct Daemon {
     /// Unix signal to send for graceful shutdown (default: SIGTERM)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stop_signal: Option<StopConfig>,
+    /// Allocate a pseudo-terminal for the daemon process.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pty: Option<bool>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
@@ -198,6 +201,9 @@ pub struct RunOptions {
     /// Hook triggered when the daemon produces matching output
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_output_hook: Option<crate::pitchfork_toml::OnOutputHook>,
+    /// Allocate a pseudo-terminal for the daemon process.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pty: Option<bool>,
 }
 
 impl Daemon {
@@ -248,6 +254,7 @@ impl Daemon {
             cpu_limit: self.cpu_limit,
             stop_signal: self.stop_signal,
             on_output_hook,
+            pty: self.pty,
         }
     }
 }
