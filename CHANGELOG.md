@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.1](https://github.com/endevco/pitchfork/compare/v2.9.0...v2.9.1) - 2026-05-03
+
+### Fixed
+
+- *(build)* restore Windows compile and add windows CI job ([#410](https://github.com/endevco/pitchfork/pull/410))
+
 ## [2.9.0](https://github.com/endevco/pitchfork/compare/v2.8.0...v2.9.0) - 2026-05-03
 
 ### Added
