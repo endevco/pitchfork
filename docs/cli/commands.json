@@ -2162,7 +2162,7 @@
   "config": {
     "props": {}
   },
-  "version": "2.8.0",
+  "version": "2.9.0",
   "usage": "Usage: pitchfork <COMMAND>",
   "complete": {
     "id": {

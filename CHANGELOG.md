@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0](https://github.com/endevco/pitchfork/compare/v2.8.0...v2.9.0) - 2026-05-03
+
+### Added
+
+- keep ANSI by default and impl PTY mode ([#408](https://github.com/endevco/pitchfork/pull/408))
+- customize stop signal and refactor config types ([#406](https://github.com/endevco/pitchfork/pull/406))
+- add hook `on_output` ([#399](https://github.com/endevco/pitchfork/pull/399))
+
 ## [2.8.0](https://github.com/endevco/pitchfork/compare/v2.7.0...v2.8.0) - 2026-04-28
 
 ### Added
