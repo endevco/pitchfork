@@ -27,3 +27,17 @@ jobs:
       - run: rm -rf .cargo
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: mise run ci
+
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: true
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # `cargo check` (debug) catches the compile errors that otherwise only
+      # surface in the release pipeline, without paying for an optimized link.
+      # Integration tests under tests/ are Unix-only (lsof, pkill, etc.) so
+      # we limit the check to lib + bins.
+      - run: cargo check --lib --bins --all-features

@@ -249,7 +249,6 @@ fn normalized_lock_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::daemon_status::DaemonStatus;
-    use crate::pitchfork_toml::Retry;
 
     #[test]
     fn test_state_file_toml_roundtrip_stopped() {

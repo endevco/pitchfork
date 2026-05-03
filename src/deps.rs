@@ -244,7 +244,7 @@ pub fn compute_reverse_stop_order_with_config(
 mod tests {
     use super::*;
     use crate::daemon_id::DaemonId;
-    use crate::pitchfork_toml::{PitchforkTomlDaemon, Retry};
+    use crate::pitchfork_toml::PitchforkTomlDaemon;
     use indexmap::IndexMap;
 
     // Helper to build a test daemon with only `depends` set, all other fields default/None.

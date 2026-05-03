@@ -389,6 +389,7 @@ pub async fn stream_sse(
         let mut file_handle: Option<std::fs::File> = None;
 
         // Internal result type for file operations within spawn_blocking
+        #[allow(dead_code)] // FileRotated is constructed only on Unix
         enum FileOpResult {
             Data(Vec<u8>),
             Truncated,
@@ -417,8 +418,10 @@ pub async fn stream_sse(
                 let fh = file_handle.take();
                 let mut ls = last_size;
                 let prev_ino = last_path_ino;
+                #[cfg_attr(not(unix), allow(unused_variables))]
                 let poll_count = poll_count;
                 tokio::task::spawn_blocking(move || {
+                    #[cfg_attr(not(unix), allow(unused_variables))]
                     let opened_fresh = fh.is_none();
                     let mut file = match fh {
                         Some(f) => f,

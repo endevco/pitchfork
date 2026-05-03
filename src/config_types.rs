@@ -197,13 +197,32 @@ impl JsonSchema for CpuLimit {
 #[serde(try_from = "String")]
 pub struct StopSignal(i32);
 
+// Signal numbers. On Unix we pull them from `libc` so they match the platform
+// (SIGUSR1/2 differ between Linux and BSD/macOS). On Windows the values are
+// only used for parsing and Display — `procs::kill` ignores `stop_signal` and
+// uses TerminateProcess via sysinfo — so POSIX-typical Linux values are fine.
+#[cfg(unix)]
+use libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
+#[cfg(windows)]
+const SIGHUP: i32 = 1;
+#[cfg(windows)]
+const SIGINT: i32 = 2;
+#[cfg(windows)]
+const SIGQUIT: i32 = 3;
+#[cfg(windows)]
+const SIGTERM: i32 = 15;
+#[cfg(windows)]
+const SIGUSR1: i32 = 10;
+#[cfg(windows)]
+const SIGUSR2: i32 = 12;
+
 const SIGNAL_TABLE: &[(&str, i32)] = &[
-    ("HUP", libc::SIGHUP),
-    ("INT", libc::SIGINT),
-    ("QUIT", libc::SIGQUIT),
-    ("TERM", libc::SIGTERM),
-    ("USR1", libc::SIGUSR1),
-    ("USR2", libc::SIGUSR2),
+    ("HUP", SIGHUP),
+    ("INT", SIGINT),
+    ("QUIT", SIGQUIT),
+    ("TERM", SIGTERM),
+    ("USR1", SIGUSR1),
+    ("USR2", SIGUSR2),
 ];
 
 impl StopSignal {
@@ -218,7 +237,7 @@ impl StopSignal {
 
 impl Default for StopSignal {
     fn default() -> Self {
-        Self(libc::SIGTERM)
+        Self(SIGTERM)
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::Result;
+#[cfg(unix)]
 use crate::settings::settings;
 use miette::IntoDiagnostic;
 use once_cell::sync::Lazy;
@@ -212,11 +213,12 @@ impl Procs {
 
         #[cfg(windows)]
         {
+            let _ = (stop_signal, stop_timeout);
             if let Some(process) = self.lock_system().process(sysinfo_pid) {
                 process.kill();
                 process.wait();
             }
-            return Ok(true);
+            Ok(true)
         }
 
         #[cfg(unix)]

@@ -464,9 +464,9 @@ pub fn generate_ca(cert_path: &std::path::Path, key_path: &std::path::Path) -> c
     // Using OpenOptions + mode() so the file is never world-readable,
     // even briefly before a chmod call.
     {
-        use std::io::Write;
         #[cfg(unix)]
         {
+            use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
             std::fs::OpenOptions::new()
                 .write(true)
@@ -809,9 +809,9 @@ impl SniCertResolver {
         let disk_path = self.host_certs_dir.join(format!("{safe_name}.pem"));
         let combined_pem = format!("{}{}", leaf_cert.pem(), key_pem);
         {
-            use std::io::Write;
             #[cfg(unix)]
             {
+                use std::io::Write;
                 use std::os::unix::fs::OpenOptionsExt;
                 if let Err(e) = std::fs::OpenOptions::new()
                     .write(true)

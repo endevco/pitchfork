@@ -12,6 +12,7 @@ mod autostop;
 mod hooks;
 mod ipc_handlers;
 mod lifecycle;
+#[cfg(unix)]
 mod pty;
 mod retry;
 mod state;
@@ -29,7 +30,9 @@ use crate::{Result, env};
 use duct::cmd;
 use miette::IntoDiagnostic;
 use once_cell::sync::Lazy;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::HashSet;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;

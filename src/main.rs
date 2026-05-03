@@ -26,6 +26,7 @@ mod watch_files;
 mod web;
 
 pub use miette::Result;
+#[cfg(unix)]
 use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::SignalKind;

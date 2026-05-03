@@ -23,7 +23,6 @@ pub struct PtyPair {
 /// practice — the extra fd is simply unused — but if strict
 /// close-on-exec semantics are needed, set `FD_CLOEXEC` manually via
 /// `fcntl(fd, F_SETFD, FD_CLOEXEC)`.
-#[cfg(unix)]
 pub fn openpty() -> std::io::Result<PtyPair> {
     let mut master_fd: libc::c_int = -1;
     let mut slave_fd: libc::c_int = -1;
