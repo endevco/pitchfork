@@ -58,6 +58,7 @@ impl List {
         }
 
         let entries = get_all_daemons(&client).await?;
+        let global_slugs = PitchforkToml::read_global_slugs();
 
         // Collect all IDs for display name resolution (clone to avoid borrow issues)
         let all_ids: Vec<DaemonId> = entries.iter().map(|e| e.id.clone()).collect();
@@ -102,7 +103,8 @@ impl List {
                 Cell::new(disabled_marker),
             ];
             if s.proxy.enable {
-                let slug = PitchforkToml::find_slug_for_daemon(&entry.id);
+                let slug =
+                    PitchforkToml::find_slug_for_daemon_in_registry(&entry.id, &global_slugs);
                 let proxy_cell = match build_proxy_url(slug.as_deref(), s) {
                     Some(proxy_url)
                         if entry.daemon.active_port.is_some()

@@ -146,10 +146,10 @@ impl TemplateContext {
             }),
         );
 
-        // Proxy URL
-        if let Some(url) = build_proxy_url(self.self_state.slug.as_deref(), s) {
-            ctx.insert("proxy_url", &url);
-        }
+        // Always expose proxy_url so templates can distinguish an unroutable daemon
+        // via a strict null value instead of an undefined-variable error.
+        let proxy_url = build_proxy_url(self.self_state.slug.as_deref(), s);
+        ctx.insert("proxy_url", &proxy_url);
 
         ctx
     }
@@ -202,7 +202,10 @@ pub fn render_template(template: &str, context: &TemplateContext) -> Result<Stri
 
 /// Render all template-enabled fields of a daemon config.
 ///
-/// Modifies the config in place. Returns the first error encountered.
+/// Modifies the config in place. Returns the first error encountered from
+/// non-hook fields (`run`, `env`, `ready_cmd`). Hook template errors are
+/// logged as warnings and the hook is set to `None` — hooks are re-rendered
+/// at fire time via `fire_hook`, so pre-rendered hook strings are unused.
 pub fn render_daemon_templates(
     config: &mut PitchforkTomlDaemon,
     context: &TemplateContext,
@@ -224,40 +227,34 @@ pub fn render_daemon_templates(
             on_ready: hooks
                 .on_ready
                 .as_deref()
-                .map(|t| renderer.render(t))
-                .transpose()?,
+                .and_then(|t| renderer.render(t).ok()),
             on_fail: hooks
                 .on_fail
                 .as_deref()
-                .map(|t| renderer.render(t))
-                .transpose()?,
+                .and_then(|t| renderer.render(t).ok()),
             on_retry: hooks
                 .on_retry
                 .as_deref()
-                .map(|t| renderer.render(t))
-                .transpose()?,
+                .and_then(|t| renderer.render(t).ok()),
             on_stop: hooks
                 .on_stop
                 .as_deref()
-                .map(|t| renderer.render(t))
-                .transpose()?,
+                .and_then(|t| renderer.render(t).ok()),
             on_exit: hooks
                 .on_exit
                 .as_deref()
-                .map(|t| renderer.render(t))
-                .transpose()?,
-            on_output: hooks
-                .on_output
-                .as_ref()
-                .map(|hook| {
-                    Ok(crate::config_types::OnOutputHook {
-                        run: renderer.render(&hook.run)?,
+                .and_then(|t| renderer.render(t).ok()),
+            on_output: hooks.on_output.as_ref().and_then(|hook| {
+                renderer
+                    .render(&hook.run)
+                    .ok()
+                    .map(|run| crate::config_types::OnOutputHook {
+                        run,
                         filter: hook.filter.clone(),
                         regex: hook.regex.clone(),
                         debounce: hook.debounce.clone(),
                     })
-                })
-                .transpose()?,
+            }),
         };
         config.hooks = Some(rendered);
     }
@@ -270,7 +267,7 @@ pub fn render_daemon_templates(
 }
 
 fn contains_template_syntax(template: &str) -> bool {
-    template.contains("{{") || template.contains("{%-") || template.contains("{%")
+    template.contains("{{") || template.contains("{%") || template.contains("{#")
 }
 
 struct TemplateRenderer {
@@ -445,6 +442,27 @@ mod tests {
     }
 
     #[test]
+    fn test_comment_only_template_is_parsed() {
+        let ctx = make_context_with_daemon("redis", vec![6379]);
+        assert_eq!(
+            render_template("before{# hidden #}after", &ctx).unwrap(),
+            "beforeafter"
+        );
+    }
+
+    #[test]
+    fn test_proxy_url_is_present_as_null_when_slug_is_missing() {
+        let id = DaemonId::new("myproj", "api");
+        let config = make_daemon_config("echo");
+        let ctx = TemplateContext::new(&id, &config, &HashMap::new(), &IndexMap::new());
+
+        assert_eq!(
+            render_template("{{ proxy_url | default(value=\"none\") }}", &ctx).unwrap(),
+            "none"
+        );
+    }
+
+    #[test]
     fn test_mixed_template_and_literal() {
         let ctx = make_context_with_daemon("redis", vec![6379]);
         assert_eq!(
@@ -511,5 +529,39 @@ mod tests {
         let on_output = hooks.on_output.unwrap();
         assert_eq!(on_output.run, "curl http://localhost:6379");
         assert_eq!(on_output.filter.as_deref(), Some("ready"));
+    }
+
+    #[test]
+    fn test_render_daemon_templates_hook_error_does_not_fail() {
+        let ctx = make_context_with_daemon("redis", vec![6379]);
+        let mut config = PitchforkTomlDaemon {
+            run: "echo".to_string(),
+            hooks: Some(crate::config_types::PitchforkTomlHooks {
+                on_ready: Some("{{ nonexistent }}".to_string()),
+                on_fail: None,
+                on_retry: None,
+                on_stop: None,
+                on_exit: None,
+                on_output: None,
+            }),
+            ..Default::default()
+        };
+
+        // Hook template errors are silently converted to None — daemon still starts
+        render_daemon_templates(&mut config, &ctx).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert!(hooks.on_ready.is_none());
+    }
+
+    #[test]
+    fn test_render_daemon_templates_run_error_still_fails() {
+        let ctx = make_context_with_daemon("redis", vec![6379]);
+        let mut config = PitchforkTomlDaemon {
+            run: "{{ nonexistent }}".to_string(),
+            ..Default::default()
+        };
+
+        // Non-hook template errors still propagate as Err
+        assert!(render_daemon_templates(&mut config, &ctx).is_err());
     }
 }

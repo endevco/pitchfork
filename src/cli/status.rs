@@ -32,6 +32,11 @@ impl Status {
     pub async fn run(&self) -> Result<()> {
         // Resolve the daemon ID to a qualified ID
         let qualified_id = PitchforkToml::resolve_id(&self.id)?;
+        let global_slugs = settings()
+            .proxy
+            .enable
+            .then(PitchforkToml::read_global_slugs)
+            .unwrap_or_default();
 
         let daemon = StateFile::get().daemons.get(&qualified_id);
         if let Some(daemon) = daemon {
@@ -58,7 +63,8 @@ impl Status {
             let s = settings();
             if s.proxy.enable && (daemon.active_port.is_some() || !daemon.resolved_port.is_empty())
             {
-                let slug = PitchforkToml::find_slug_for_daemon(&qualified_id);
+                let slug =
+                    PitchforkToml::find_slug_for_daemon_in_registry(&qualified_id, &global_slugs);
                 if let Some(url) = build_proxy_url(slug.as_deref(), s) {
                     println!("Proxy: {url}");
                 }
