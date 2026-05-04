@@ -2818,6 +2818,7 @@ dependencies = [
  "syn 2.0.117",
  "sysinfo",
  "tempfile",
+ "tera",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

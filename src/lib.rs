@@ -20,6 +20,7 @@ pub mod settings;
 pub mod shell;
 pub mod state_file;
 pub mod supervisor;
+pub mod template;
 pub mod tui;
 pub mod ui;
 pub mod watch_files;

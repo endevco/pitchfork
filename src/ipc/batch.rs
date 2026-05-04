@@ -241,13 +241,20 @@ impl IpcClient {
             .into_iter()
             .partition(|id| pt.daemons.contains_key(id));
 
-        // Get currently running daemons
-        let running_daemons: HashSet<DaemonId> = self
-            .active_daemons()
-            .await?
+        // Get currently running daemons once and reuse the snapshot for both
+        // restart checks and template context.
+        let active_daemons = self.active_daemons().await?;
+        let running_daemons: HashSet<DaemonId> = active_daemons
             .iter()
             .filter(|d| d.status.is_running() || d.status.is_waiting())
             .map(|d| d.id.clone())
+            .collect();
+        let running_ports_map: HashMap<DaemonId, Vec<u16>> = active_daemons
+            .into_iter()
+            .filter(|d| {
+                (d.status.is_running() || d.status.is_waiting()) && !d.resolved_port.is_empty()
+            })
+            .map(|d| (d.id, d.resolved_port))
             .collect();
 
         // Collect set of explicitly requested IDs for force restart check
@@ -256,6 +263,9 @@ impl IpcClient {
         // Start daemons level by level
         let mut any_failed = false;
         let mut successful_daemons: Vec<(DaemonId, DateTime<Local>, Vec<u16>)> = Vec::new();
+        // Accumulated resolved ports from completed levels, available for template rendering
+        let mut resolved_ports_map: std::collections::HashMap<DaemonId, Vec<u16>> =
+            std::collections::HashMap::new();
 
         // First, handle config-based daemons with dependency resolution
         if !config_ids.is_empty() {
@@ -263,10 +273,12 @@ impl IpcClient {
             let dep_order = resolve_dependencies(&config_ids, &pt.daemons)?;
 
             for level in dep_order.levels {
+                let mut successful_this_level: Vec<(DaemonId, Vec<u16>)> = Vec::new();
+
                 // Filter daemons to start in this level
                 let to_start: Vec<DaemonId> = level
-                    .into_iter()
-                    .filter(|id| {
+                    .iter()
+                    .filter(|&id| {
                         // Skip disabled daemons (dependencies might be disabled)
                         if disabled_daemons.contains(id) {
                             warn!("Skipping disabled daemon {id} (dependency)");
@@ -291,7 +303,14 @@ impl IpcClient {
                             true
                         }
                     })
+                    .cloned()
                     .collect();
+
+                for id in &level {
+                    if let Some(ports) = running_ports_map.get(id) {
+                        resolved_ports_map.insert(id.clone(), ports.clone());
+                    }
+                }
 
                 if to_start.is_empty() {
                     continue;
@@ -301,11 +320,31 @@ impl IpcClient {
                 let mut tasks = Vec::new();
                 for id in to_start {
                     if let Some(daemon_config) = pt.daemons.get(&id) {
+                        // Render Tera templates with context from previously started daemons
+                        let mut rendered_config = daemon_config.clone();
+                        let template_ctx = crate::template::TemplateContext::new(
+                            &id,
+                            daemon_config,
+                            &resolved_ports_map,
+                            &pt.daemons,
+                        );
+                        match crate::template::render_daemon_templates(
+                            &mut rendered_config,
+                            &template_ctx,
+                        ) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                error!("Template render error for daemon {id}: {e}");
+                                any_failed = true;
+                                continue;
+                            }
+                        }
+
                         let is_explicit = explicitly_requested.contains(&id);
                         let task = Self::spawn_start_task(
                             self.clone(),
                             id,
-                            daemon_config,
+                            &rendered_config,
                             is_explicit,
                             &opts,
                         );
@@ -321,6 +360,8 @@ impl IpcClient {
                                 any_failed = true;
                                 error!("Daemon {} failed to start", result.id);
                             } else if let Some(start_time) = result.start_time {
+                                successful_this_level
+                                    .push((result.id.clone(), result.resolved_ports.clone()));
                                 successful_daemons.push((
                                     result.id,
                                     start_time,
@@ -335,6 +376,11 @@ impl IpcClient {
                     }
                 }
 
+                // Daemons from this level become visible to later levels if they
+                // either started successfully now or were already running.
+                for (id, ports) in successful_this_level {
+                    resolved_ports_map.insert(id, ports);
+                }
                 // If any daemon in this level failed, abort starting dependents
                 if any_failed {
                     error!("Dependency failed, aborting remaining starts");

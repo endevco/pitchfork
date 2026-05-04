@@ -20,6 +20,7 @@ mod settings;
 mod shell;
 mod state_file;
 mod supervisor;
+mod template;
 mod tui;
 mod ui;
 mod watch_files;

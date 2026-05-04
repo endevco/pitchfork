@@ -78,6 +78,7 @@ export default defineConfig({
       {
         text: "Advanced",
         items: [
+          { text: "Configuration Templates", link: "/guides/configuration-templates" },
           { text: "Container Mode", link: "/guides/container-mode" },
           { text: "mise Integration", link: "/guides/mise-integration" },
           { text: "MCP Server (AI Assistants)", link: "/guides/mcp" },

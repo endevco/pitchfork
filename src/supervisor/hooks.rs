@@ -8,8 +8,9 @@ use crate::daemon_id::DaemonId;
 use crate::pitchfork_toml::PitchforkToml;
 use crate::shell::Shell;
 use crate::supervisor::SUPERVISOR;
-use crate::{env, pitchfork_toml};
+use crate::{env, pitchfork_toml, template};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// The type of lifecycle hook to fire
@@ -75,6 +76,15 @@ pub(crate) async fn fire_hook(
 
         let Some(cmd) = hook_cmd else { return };
 
+        // Render Tera templates in hook command with context from state file
+        let cmd = match render_hook_template(&cmd, &daemon_id, &pt).await {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                warn!("{hook_type} hook template error for daemon {daemon_id}: {e}");
+                return;
+            }
+        };
+
         info!("firing {hook_type} hook for daemon {daemon_id}: {cmd}");
 
         let mut command = Shell::default_for_platform().command(&cmd);
@@ -138,6 +148,16 @@ pub(crate) async fn fire_output_hook(
     matched_line: String,
 ) {
     let handle = tokio::spawn(async move {
+        // Render Tera templates in output hook command
+        let pt = PitchforkToml::all_merged().unwrap_or_default();
+        let cmd = match render_hook_template(&cmd, &daemon_id, &pt).await {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                warn!("on_output hook template error for daemon {daemon_id}: {e}");
+                return;
+            }
+        };
+
         info!("firing on_output hook for daemon {daemon_id}: {cmd}");
 
         let mut command = Shell::default_for_platform().command(&cmd);
@@ -175,4 +195,39 @@ pub(crate) async fn fire_output_hook(
     let mut tasks = SUPERVISOR.hook_tasks.lock().await;
     tasks.retain(|h| !h.is_finished());
     tasks.push(handle);
+}
+
+/// Render Tera templates in a hook command using the current state file data.
+///
+/// In the supervisor, daemons are already running, so `resolved_port` and
+/// `active_port` are available from the state file.
+async fn render_hook_template(
+    template_str: &str,
+    daemon_id: &DaemonId,
+    pt: &PitchforkToml,
+) -> Result<String, template::RenderError> {
+    // Collect resolved ports from all running daemons in the state file
+    let resolved_daemons: HashMap<DaemonId, Vec<u16>> = {
+        let state_file = SUPERVISOR.state_file.lock().await;
+        state_file
+            .daemons
+            .iter()
+            .filter_map(|(id, d)| {
+                if d.resolved_port.is_empty() {
+                    None
+                } else {
+                    Some((id.clone(), d.resolved_port.clone()))
+                }
+            })
+            .collect()
+    };
+
+    let daemon_config = pt.daemons.get(daemon_id);
+    let ctx = template::TemplateContext::new(
+        daemon_id,
+        daemon_config.unwrap_or(&Default::default()),
+        &resolved_daemons,
+        &pt.daemons,
+    );
+    template::render_template(template_str, &ctx)
 }

@@ -59,9 +59,6 @@ impl List {
 
         let entries = get_all_daemons(&client).await?;
 
-        // Load global slugs registry for proxy URL display
-        let global_slugs = PitchforkToml::read_global_slugs();
-
         // Collect all IDs for display name resolution (clone to avoid borrow issues)
         let all_ids: Vec<DaemonId> = entries.iter().map(|e| e.id.clone()).collect();
 
@@ -105,23 +102,8 @@ impl List {
                 Cell::new(disabled_marker),
             ];
             if s.proxy.enable {
-                // Look up slug from global config, matching both daemon name
-                // and namespace to avoid false matches in multi-project setups.
-                let slug = global_slugs
-                    .iter()
-                    .find(|(slug, se)| {
-                        let daemon_name = se.daemon.as_deref().unwrap_or(slug);
-                        if entry.id.name() != daemon_name {
-                            return false;
-                        }
-                        // Scope to the slug's registered project namespace
-                        match PitchforkToml::namespace_for_dir(&se.dir) {
-                            Ok(ns) => entry.id.namespace() == ns,
-                            Err(_) => true, // can't resolve namespace — fall back to name-only
-                        }
-                    })
-                    .map(|(slug, _)| slug.as_str());
-                let proxy_cell = match build_proxy_url(slug, s) {
+                let slug = PitchforkToml::find_slug_for_daemon(&entry.id);
+                let proxy_cell = match build_proxy_url(slug.as_deref(), s) {
                     Some(proxy_url)
                         if entry.daemon.active_port.is_some()
                             || !entry.daemon.resolved_port.is_empty() =>
