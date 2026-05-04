@@ -1083,7 +1083,9 @@ impl PitchforkToml {
                 daemon: daemon.map(str::to_string),
             },
         );
-        pt.write_unlocked()
+        pt.write_unlocked()?;
+        crate::proxy::hosts::sync_hosts_from_settings();
+        Ok(())
     }
 
     /// Remove a slug from the global config's `[slugs]` section.
@@ -1105,6 +1107,7 @@ impl PitchforkToml {
         let removed = pt.slugs.shift_remove(slug).is_some();
         if removed {
             pt.write_unlocked()?;
+            crate::proxy::hosts::sync_hosts_from_settings();
         }
         Ok(removed)
     }
@@ -1192,6 +1195,20 @@ impl PitchforkTomlDaemon {
         use crate::daemon::RunOptions;
 
         let dir = crate::ipc::batch::resolve_daemon_dir(self.dir.as_deref(), self.path.as_deref());
+        let slug = crate::pitchfork_toml::PitchforkToml::read_global_slugs()
+            .into_iter()
+            .find(|(slug, entry)| {
+                let daemon_name = entry.daemon.as_deref().unwrap_or(slug);
+                if daemon_name != id.name() {
+                    return false;
+                }
+
+                match crate::pitchfork_toml::PitchforkToml::namespace_for_dir(&entry.dir).ok() {
+                    Some(namespace) => namespace == id.namespace(),
+                    None => false,
+                }
+            })
+            .map(|(slug, _)| slug);
 
         RunOptions {
             id: id.clone(),
@@ -1219,7 +1236,7 @@ impl PitchforkTomlDaemon {
                 self.path.as_deref(),
             )),
             mise: self.mise,
-            slug: None,
+            slug,
             proxy: None,
             user: self.user.clone(),
             memory_limit: self.memory_limit,

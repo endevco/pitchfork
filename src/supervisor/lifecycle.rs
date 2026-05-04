@@ -368,6 +368,9 @@ impl Supervisor {
             }
         }
 
+        // Inject proxy-related environment variables
+        inject_proxy_env(&mut cmd, &opts.slug);
+
         #[cfg(unix)]
         {
             let run_identity = run_identity.clone();
@@ -1712,4 +1715,80 @@ mod tests {
         let identity = resolve_run_identity(Some("root"), 0, 0, Some("501"), Some("20")).unwrap();
         assert_eq!(identity, RunIdentity::Inherit);
     }
+}
+
+/// Inject proxy-related environment variables into a daemon's command.
+///
+/// Adds:
+/// - `HOST` — the address the daemon should bind to (`127.0.0.1`)
+/// - `PITCHFORK_URL` — the public proxy URL for this daemon (if it has a slug)
+/// - `NODE_EXTRA_CA_CERTS` — path to the pitchfork CA cert (if HTTPS enabled)
+/// - `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` — `.<tld>` for Vite host allowlisting
+fn inject_proxy_env(cmd: &mut tokio::process::Command, slug: &Option<String>) {
+    let s = crate::settings::settings();
+
+    if should_force_loopback_host(slug) {
+        // Only force loopback binding for daemons that are actually routed via a slug.
+        cmd.env("HOST", "127.0.0.1");
+    }
+
+    // PITCHFORK_URL: the daemon's public proxy URL (only if it has a slug and proxy is enabled)
+    if let Some(url) = build_pitchfork_url(slug, s) {
+        cmd.env("PITCHFORK_URL", &url);
+    }
+
+    // NODE_EXTRA_CA_CERTS: let Node.js backends trust the pitchfork CA
+    if s.proxy.enable && s.proxy.https {
+        let ca_path = if s.proxy.tls_cert.is_empty() {
+            crate::env::PITCHFORK_STATE_DIR.join("proxy").join("ca.pem")
+        } else {
+            std::path::PathBuf::from(&s.proxy.tls_cert)
+        };
+        if ca_path.exists() {
+            cmd.env("NODE_EXTRA_CA_CERTS", ca_path.to_string_lossy().to_string());
+        }
+    }
+
+    // __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: Vite host allowlisting
+    if s.proxy.enable {
+        cmd.env(
+            "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
+            format!(".{}", s.proxy.tld),
+        );
+    }
+}
+
+fn should_force_loopback_host(slug: &Option<String>) -> bool {
+    let Some(slug) = slug.as_deref() else {
+        return false;
+    };
+
+    let s = crate::settings::settings();
+    if !s.proxy.enable {
+        return false;
+    }
+
+    let slugs = crate::pitchfork_toml::PitchforkToml::read_global_slugs();
+    slugs.contains_key(slug)
+}
+
+/// Compute the public proxy URL for a daemon.
+///
+/// Returns `None` if the daemon has no slug or the proxy is not enabled.
+fn build_pitchfork_url(slug: &Option<String>, s: &crate::settings::Settings) -> Option<String> {
+    let slug = slug.as_ref()?;
+    if !s.proxy.enable {
+        return None;
+    }
+    let scheme = if s.proxy.https { "https" } else { "http" };
+    let port = u16::try_from(s.proxy.port).ok().filter(|&p| p > 0)?;
+    let port_suffix = if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+        String::new()
+    } else {
+        format!(":{port}")
+    };
+    Some(format!(
+        "{scheme}://{slug}.{tld}{port_suffix}",
+        tld = s.proxy.tld
+    ))
 }

@@ -10,4 +10,5 @@
 //! myapp.localhost:7777          →  localhost:8080  (via slug)
 //! ```
 
+pub mod hosts;
 pub mod server;
