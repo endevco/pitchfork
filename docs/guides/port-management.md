@@ -262,26 +262,30 @@ enable = true
 tld = "test"
 ```
 
-This requires wildcard DNS resolution for `*.test`. On macOS with dnsmasq:
+With the default `proxy.sync_hosts = true`, pitchfork keeps registered slugs
+synced into `/etc/hosts`, so you usually do not need to set up `dnsmasq` or any
+other wildcard DNS service just to use a custom TLD.
+
+For example, if you register these slugs:
 
 ```bash
-# Install dnsmasq
-brew install dnsmasq
-
-# Add wildcard DNS entry
-echo "address=/.test/127.0.0.1" >> /usr/local/etc/dnsmasq.conf
-
-# Configure macOS resolver
-sudo mkdir -p /etc/resolver
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/test
-
-# Start dnsmasq
-sudo brew services start dnsmasq
+pitchfork proxy add api
+pitchfork proxy add docs
 ```
 
-::: info
-Later we will add built-in support for custom TLDs without manual DNS configuration.
-:::
+pitchfork will maintain matching `/etc/hosts` entries such as:
+
+```text
+127.0.0.1 api.test
+127.0.0.1 docs.test
+```
+
+This works for registered slugs only. It is not wildcard DNS for arbitrary
+`*.test` names.
+
+If pitchfork cannot write `/etc/hosts`, you still need to provide DNS
+resolution yourself, for example with `dnsmasq` or platform-specific resolver
+configuration.
 
 
 ## Proxy Commands

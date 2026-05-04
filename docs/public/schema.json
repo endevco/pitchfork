@@ -625,6 +625,13 @@
           ],
           "format": "int64"
         },
+        "sync_hosts": {
+          "description": "Automatically sync slug hostnames to /etc/hosts",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "tld": {
           "description": "Top-level domain used for proxy URLs",
           "type": [

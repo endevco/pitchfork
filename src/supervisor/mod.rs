@@ -78,6 +78,11 @@ pub struct Supervisor {
     /// Signalled by each monitoring task after it finishes registering hooks
     /// (or decides it has nothing to register). `close()` waits on this.
     pub(crate) monitor_done: Notify,
+    /// Cancellation token for the proxy server — cancelled on shutdown to
+    /// stop accepting new connections and drain in-flight ones.
+    pub(crate) proxy_cancel: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// Join handle for the proxy task so shutdown can wait for cleanup.
+    pub(crate) proxy_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 pub(crate) fn interval_duration() -> Duration {
@@ -133,6 +138,8 @@ impl Supervisor {
             hook_tasks: Mutex::new(Vec::new()),
             active_monitors: AtomicU32::new(0),
             monitor_done: Notify::new(),
+            proxy_cancel: Mutex::new(None),
+            proxy_task: Mutex::new(None),
         })
     }
 
@@ -248,11 +255,15 @@ impl Supervisor {
             // channel.  This avoids the TOCTOU race of a pre-flight bind check
             // while still surfacing binding failures immediately.
             let (bind_tx, bind_rx) = tokio::sync::oneshot::channel();
-            tokio::spawn(async {
-                if let Err(e) = crate::proxy::server::serve(bind_tx).await {
+            let proxy_cancel = tokio_util::sync::CancellationToken::new();
+            let proxy_cancel_clone = proxy_cancel.clone();
+            *self.proxy_cancel.lock().await = Some(proxy_cancel);
+            let proxy_task = tokio::spawn(async move {
+                if let Err(e) = crate::proxy::server::serve(bind_tx, proxy_cancel_clone).await {
                     error!("Proxy server error: {e}");
                 }
             });
+            *self.proxy_task.lock().await = Some(proxy_task);
             match bind_rx.await {
                 Ok(Ok(())) => {
                     // Proxy bound successfully — nothing to do.
@@ -509,6 +520,23 @@ impl Supervisor {
     }
 
     pub(crate) async fn close(&self) {
+        // Signal the proxy server to stop accepting new connections
+        // and drain in-flight ones, *before* stopping daemons so the
+        // proxy has time to finish forwarding active requests.
+        if let Some(cancel) = self.proxy_cancel.lock().await.take() {
+            cancel.cancel();
+        }
+
+        if let Some(proxy_task) = self.proxy_task.lock().await.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(12), proxy_task).await;
+        }
+
+        // Clean up /etc/hosts entries managed by pitchfork
+        let s = settings();
+        if s.proxy.enable && s.proxy.sync_hosts {
+            crate::proxy::hosts::clean_hosts_file();
+        }
+
         let pitchfork_id = DaemonId::pitchfork();
         let active = self.active_daemons().await;
         let active_ids: Vec<DaemonId> = active

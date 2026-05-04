@@ -186,6 +186,7 @@ struct ProxyState {
 /// This function is intended to be spawned as a background task.
 pub async fn serve(
     bind_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> crate::Result<()> {
     let s = settings();
     let Some(effective_port) = u16::try_from(s.proxy.port).ok().filter(|&p| p > 0) else {
@@ -233,9 +234,9 @@ pub async fn serve(
     let addr = SocketAddr::from((bind_ip, effective_port));
 
     if s.proxy.https {
-        serve_https_with_http_fallback(app, addr, s, effective_port, bind_tx).await
+        serve_https_with_http_fallback(app, addr, s, effective_port, bind_tx, cancel).await
     } else {
-        serve_http(app, addr, effective_port, bind_tx).await
+        serve_http(app, addr, effective_port, bind_tx, cancel).await
     }
 }
 
@@ -245,9 +246,13 @@ async fn serve_http(
     addr: SocketAddr,
     effective_port: u16,
     bind_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> crate::Result<()> {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
+            if settings().proxy.sync_hosts {
+                crate::proxy::hosts::sync_hosts_from_settings();
+            }
             let _ = bind_tx.send(Ok(()));
             l
         }
@@ -265,10 +270,12 @@ async fn serve_http(
              The supervisor must be started with sudo to bind to this port."
         );
     }
+    let shutdown_signal = cancel.clone().cancelled_owned();
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal)
     .await
     .map_err(|e| miette::miette!("Proxy server error: {e}"))?;
     Ok(())
@@ -277,9 +284,8 @@ async fn serve_http(
 /// Serve HTTPS with automatic HTTP detection on the same port.
 ///
 /// Peeks at the first byte of each incoming TCP connection:
-/// - `0x16` (TLS ClientHello) → hand off to the TLS acceptor
-/// - anything else → treat as plain HTTP (useful for health checks and
-///   clients that haven't been configured to use HTTPS)
+/// - `0x16` (TLS ClientHello) → hand off to the TLS acceptor (HTTP/2 + HTTP/1.1 via ALPN)
+/// - anything else → 302 redirect to HTTPS
 #[cfg(feature = "proxy-tls")]
 async fn serve_https_with_http_fallback(
     app: Router,
@@ -287,6 +293,7 @@ async fn serve_https_with_http_fallback(
     s: &crate::settings::Settings,
     effective_port: u16,
     bind_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> crate::Result<()> {
     use rustls::ServerConfig;
     use tokio_rustls::TlsAcceptor;
@@ -309,14 +316,20 @@ async fn serve_https_with_http_fallback(
     // Build the SNI resolver (loads CA, caches per-domain certs)
     let resolver = SniCertResolver::new(&ca_cert_path, &ca_key_path)?;
 
-    let tls_config = ServerConfig::builder()
+    let mut tls_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(resolver));
+    // Advertise HTTP/2 and HTTP/1.1 via ALPN so browsers negotiate HTTP/2
+    // for multiplexed requests (eliminates the 6-connection-per-host limit).
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
+            if settings().proxy.sync_hosts {
+                crate::proxy::hosts::sync_hosts_from_settings();
+            }
             let _ = bind_tx.send(Ok(()));
             l
         }
@@ -335,55 +348,86 @@ async fn serve_https_with_http_fallback(
         );
     }
 
+    // Build a lightweight redirect app for plain-HTTP requests.
+    let redirect_app = Router::new().fallback(redirect_to_https_handler);
+
     // Accept connections and sniff the first byte to decide TLS vs plain HTTP.
+    let mut conn_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
-        let (stream, _peer_addr) = match listener.accept().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                // Transient errors (e.g. EAGAIN, EMFILE) should not bring down
-                // the entire proxy server.  Log and retry after a brief pause.
-                log::warn!("Accept error (will retry): {e}");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                continue;
-            }
-        };
+        // Reap finished connection tasks during normal operation so the JoinSet
+        // does not retain one entry per historical connection.
+        while conn_tasks.try_join_next().is_some() {}
 
-        let acceptor = acceptor.clone();
-        let app = app.clone();
+        tokio::select! {
+            accept_result = listener.accept() => {
+                let (stream, _peer_addr) = match accept_result {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        log::warn!("Accept error (will retry): {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
 
-        tokio::spawn(async move {
-            // Peek at the first byte without consuming it.
-            // TLS ClientHello always starts with 0x16 (content type "handshake").
-            let mut peek_buf = [0u8; 1];
-            match stream.peek(&mut peek_buf).await {
-                Ok(0) | Err(_) => return, // connection closed before sending anything
-                _ => {}
-            }
+                let acceptor = acceptor.clone();
+                let app = app.clone();
+                let redirect_app = redirect_app.clone();
 
-            if peek_buf[0] == 0x16 {
-                // TLS handshake
-                match acceptor.accept(stream).await {
-                    Ok(tls_stream) => {
-                        let io = hyper_util::rt::TokioIo::new(tls_stream);
-                        let svc = hyper_util::service::TowerToHyperService::new(app);
+                conn_tasks.spawn(async move {
+                    // Peek at the first byte without consuming it.
+                    // TLS ClientHello always starts with 0x16 (content type "handshake").
+                    let mut peek_buf = [0u8; 1];
+                    match stream.peek(&mut peek_buf).await {
+                        Ok(0) | Err(_) => return,
+                        _ => {}
+                    }
+
+                    if peek_buf[0] == 0x16 {
+                        // TLS handshake → HTTP/2 or HTTP/1.1 (negotiated via ALPN)
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                let svc = hyper_util::service::TowerToHyperService::new(app);
+                                if let Err(e) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                                    .serve_connection_with_upgrades(io, svc)
+                                    .await
+                                {
+                                    // HTTP/2 RST_STREAM errors from cancelled browser requests
+                                    // (navigation, HMR) are normal — log at debug to avoid noise.
+                                    log::debug!("Connection error: {e}");
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("TLS handshake error: {e}");
+                            }
+                        }
+                    } else {
+                        // Plain HTTP on the TLS port → 302 redirect to HTTPS
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let svc = hyper_util::service::TowerToHyperService::new(redirect_app);
                         let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                             .serve_connection_with_upgrades(io, svc)
                             .await;
                     }
-                    Err(e) => {
-                        log::debug!("TLS handshake error: {e}");
-                    }
-                }
-            } else {
-                // Plain HTTP on the TLS port
-                let io = hyper_util::rt::TokioIo::new(stream);
-                let svc = hyper_util::service::TowerToHyperService::new(app);
-                let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                    .serve_connection_with_upgrades(io, svc)
-                    .await;
+                });
+
+                while conn_tasks.try_join_next().is_some() {}
             }
-        });
+            _ = cancel.cancelled() => {
+                log::info!("Proxy server shutting down (cancel signal received)");
+                break;
+            }
+        }
     }
+
+    // Drain in-flight connections with a timeout.
+    let drain_timeout = std::time::Duration::from_secs(10);
+    let _ = tokio::time::timeout(drain_timeout, async {
+        while conn_tasks.join_next().await.is_some() {}
+    })
+    .await;
+
+    Ok(())
 }
 
 /// Fallback when proxy-tls feature is not enabled.
@@ -394,6 +438,7 @@ async fn serve_https_with_http_fallback(
     _s: &crate::settings::Settings,
     _effective_port: u16,
     bind_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    _cancel: tokio_util::sync::CancellationToken,
 ) -> crate::Result<()> {
     let msg = "HTTPS proxy support requires the `proxy-tls` feature.\n\
          Rebuild pitchfork with: cargo build --features proxy-tls"
@@ -1556,6 +1601,71 @@ fn starting_html_response(slug: &str, raw_host: &str) -> Response {
         .header("retry-after", "2")
         .body(Body::from(html))
         .unwrap_or_else(|_| (StatusCode::SERVICE_UNAVAILABLE, "Starting…").into_response())
+}
+
+/// Handler that redirects plain-HTTP requests to HTTPS.
+///
+/// Used when the proxy is configured for HTTPS but receives a plain-HTTP
+/// request on the same port (after the first-byte peek determines it is
+/// not a TLS ClientHello).  Returns a 302 redirect to the HTTPS equivalent.
+///
+/// WebSocket upgrade attempts over plain HTTP are rejected with 400
+/// because WS-over-plain-HTTP to a TLS port is inherently broken.
+async fn redirect_to_https_handler(req: Request) -> Response {
+    // Reject WebSocket upgrades over plain HTTP
+    if req.headers().contains_key("upgrade") {
+        log::warn!("Dropping plain-HTTP WebSocket upgrade attempt — use wss:// instead of ws://");
+        return (
+            StatusCode::BAD_REQUEST,
+            "WebSocket over plain HTTP is not supported on the HTTPS port. Use wss:// instead.",
+        )
+            .into_response();
+    }
+
+    let raw_host = get_request_host(&req);
+    let Some(raw_host) = raw_host else {
+        return (StatusCode::BAD_REQUEST, "Missing Host header").into_response();
+    };
+
+    // Strip any incoming port from Host and use the configured HTTPS port.
+    let hostname = if raw_host.starts_with('[') {
+        // IPv6: "[::1]:port" or "[::1]"
+        raw_host
+            .split_once("]:")
+            .map(|(host, _)| host)
+            .unwrap_or(&raw_host)
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+    } else {
+        // IPv4/hostname: "host:port" or "host"
+        let mut parts = raw_host.rsplitn(2, ':');
+        let last = parts.next().unwrap_or(&raw_host);
+        parts.next().unwrap_or(last)
+    };
+
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let https_port = match u16::try_from(settings().proxy.port).ok().filter(|&p| p > 0) {
+        Some(443) | None => String::new(),
+        Some(port) => format!(":{port}"),
+    };
+
+    let host_for_url = if raw_host.starts_with('[') {
+        format!("[{hostname}]")
+    } else {
+        hostname.to_string()
+    };
+
+    let location = format!("https://{host_for_url}{https_port}{path}");
+    (
+        StatusCode::FOUND,
+        [(axum::http::header::LOCATION, location)],
+    )
+        .into_response()
 }
 
 /// Build a plain-text error response.

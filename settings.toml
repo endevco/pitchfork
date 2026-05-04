@@ -670,3 +670,23 @@ the browser receives an error page indicating the startup timed out.
 - `"30s"` - Default, suitable for most daemons
 - `"60s"` - For daemons with slow initialisation (e.g. large Java apps)
 """
+
+[proxy.sync_hosts]
+type = "Bool"
+env = "PITCHFORK_PROXY_SYNC_HOSTS"
+default = "true"
+description = "Automatically sync slug hostnames to /etc/hosts"
+docs = """
+When enabled (default), pitchfork automatically adds entries to `/etc/hosts`
+for registered slugs (e.g. `127.0.0.1 myapp.localhost`) so that browsers
+can resolve them.
+
+This is needed because Safari does not auto-resolve `.localhost` subdomains,
+and custom TLDs (e.g. `.test`) always require DNS entries.
+
+Entries are managed in a marked block in `/etc/hosts` and cleaned up when
+the proxy shuts down. Writing to `/etc/hosts` may require `sudo`.
+
+Set to `false` to disable automatic hosts file management. You will need to
+configure DNS resolution yourself (e.g. `dnsmasq`, `/etc/resolver/` on macOS).
+"""
