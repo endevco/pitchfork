@@ -1,7 +1,7 @@
 use crate::daemon_id::DaemonId;
 use crate::pitchfork_toml::{PitchforkToml, WatchMode};
 use crate::state_file::StateFile;
-use crate::ui::style::edim;
+use crate::ui::style::{edim, estyle};
 use crate::watch_files::WatchFiles;
 use crate::{Result, env};
 use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, TimeZone, Timelike};
@@ -1298,7 +1298,14 @@ pub fn print_logs_for_time_range(
     Ok(())
 }
 
-pub fn print_startup_logs(daemon_id: &DaemonId, from: DateTime<Local>) -> Result<()> {
+/// Collects startup log lines for a single daemon (does not print).
+///
+/// Returns a list of `(time, daemon_id_qualified, message)` tuples for log
+/// entries written after `from`.
+pub fn collect_startup_logs(
+    daemon_id: &DaemonId,
+    from: DateTime<Local>,
+) -> Result<Vec<(String, String, String)>> {
     let daemon_ids = vec![daemon_id.clone()];
     let log_files = get_log_file_infos(&daemon_ids)?;
 
@@ -1320,13 +1327,159 @@ pub fn print_startup_logs(daemon_id: &DaemonId, from: DateTime<Local>) -> Result
         .sorted_by_cached_key(|l| l.0.to_string())
         .collect_vec();
 
-    if !log_lines.is_empty() {
-        eprintln!("\n{} {} {}", edim("==="), edim("Startup logs"), edim("==="));
-        for (date, _id, msg) in log_lines {
-            eprintln!("{} {}", edim(&date), msg);
-        }
-        eprintln!("{} {} {}\n", edim("==="), edim("End of logs"), edim("==="));
+    Ok(log_lines)
+}
+
+/// Prints collected startup log lines for all daemons in a unified block.
+///
+/// When only one daemon ID appears in the log lines, omits the ID column since
+/// it would be redundant.  When multiple daemons are present, aligns the ID column.
+///
+/// Format (single daemon):
+/// ```text
+///   STARTUP LOGS
+///   17:12:14 v24.14.0
+/// ```
+///
+/// Format (multiple daemons):
+/// ```text
+///   STARTUP LOGS
+///   api     17:12:14 v3.1.0 ready
+///   web     17:12:14 listening on 0.0.0.0:8080
+/// ```
+pub fn print_startup_logs_block(log_lines: &[(String, String, String)]) {
+    if log_lines.is_empty() {
+        return;
     }
 
-    Ok(())
+    // Unique daemon IDs to decide whether to show the ID column.
+    // We decide based on what's actually in the logs, not how many daemons
+    // were started — if multiple daemons started but only one emitted logs,
+    // the user still needs to know which daemon the logs belong to.
+    let unique_ids: BTreeSet<&str> = log_lines.iter().map(|(_, id, _)| id.as_str()).collect();
+    let show_id = unique_ids.len() > 1;
+
+    // Filter PTY control sequences from log messages, keeping SGR (color) codes.
+    // Non-tty: also strip all remaining ANSI color codes.
+    let is_tty = std::io::stderr().is_terminal();
+    let format_msg = |msg: &str| -> String {
+        let stripped = strip_pty_controls(msg);
+        if is_tty {
+            stripped
+        } else {
+            console::strip_ansi_codes(&stripped).to_string()
+        }
+    };
+
+    // Tag with dim background style, always on its own line
+    let tag = estyle(" STARTUP LOGS ").black().on_color256(8); // dark gray bg
+    eprintln!("\n{tag}");
+
+    if show_id {
+        let max_id_width = log_lines
+            .iter()
+            .map(|(_, id, _)| console::measure_text_width(id))
+            .max()
+            .unwrap_or(0);
+        for (date, id, msg) in log_lines {
+            let time = date.split(' ').nth(1).unwrap_or(date);
+            let padding = max_id_width - console::measure_text_width(id);
+            eprintln!(
+                "{} {}{} {}",
+                edim(id),
+                " ".repeat(padding),
+                edim(time),
+                format_msg(msg)
+            );
+        }
+    } else {
+        for (date, _, msg) in log_lines {
+            let time = date.split(' ').nth(1).unwrap_or(date);
+            eprintln!("{} {}", edim(time), format_msg(msg));
+        }
+    }
+}
+
+/// Strips PTY control sequences from a string while preserving SGR (color/style) codes.
+///
+/// Removes CSI sequences that control cursor movement, screen clearing, erasing, etc.,
+/// but keeps `\x1b[...m` (SGR) sequences so colors are retained.
+fn strip_pty_controls(s: &str) -> String {
+    struct Stripper {
+        result: String,
+    }
+
+    impl vte::Perform for Stripper {
+        fn print(&mut self, c: char) {
+            self.result.push(c);
+        }
+
+        fn execute(&mut self, byte: u8) {
+            // Keep \n and \t; drop other control characters (BEL, BS, CR, etc.)
+            if byte == b'\n' || byte == b'\t' {
+                self.result.push(byte as char);
+            }
+        }
+
+        fn csi_dispatch(
+            &mut self,
+            params: &vte::Params,
+            _intermediates: &[u8],
+            _ignore: bool,
+            action: char,
+        ) {
+            // Keep SGR sequences (final byte 'm')
+            if action == 'm' {
+                self.result.push_str("\x1b[");
+                let mut first = true;
+                for sub in params.iter() {
+                    if !first {
+                        self.result.push(';');
+                    }
+                    first = false;
+                    for (i, &p) in sub.iter().enumerate() {
+                        if i > 0 {
+                            self.result.push(':');
+                        }
+                        self.result.push_str(&p.to_string());
+                    }
+                }
+                self.result.push('m');
+            }
+            // All other CSI sequences (cursor move, clear, erase, etc.) are dropped
+        }
+
+        fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+            // Drop OSC sequences (e.g. window title)
+        }
+
+        fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {
+            // Drop ESC sequences (e.g. ESC c = reset terminal)
+        }
+
+        fn hook(
+            &mut self,
+            _params: &vte::Params,
+            _intermediates: &[u8],
+            _ignore: bool,
+            _action: char,
+        ) {
+            // Drop DCS hooks
+        }
+
+        fn put(&mut self, _byte: u8) {
+            // Drop DCS data
+        }
+
+        fn unhook(&mut self) {
+            // Drop DCS unhook
+        }
+    }
+
+    let mut parser = vte::Parser::new();
+    let mut stripper = Stripper {
+        result: String::with_capacity(s.len()),
+    };
+    parser.advance(&mut stripper, s.as_bytes());
+    stripper.result
 }

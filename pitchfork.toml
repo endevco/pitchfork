@@ -3,6 +3,7 @@ run = "mise run -q docs"
 auto = ["start", "stop"]
 retry = 0
 ready_output = "http://localhost:"
+pty = true
 
 [daemons.docs.port]
 expect = [5173]
