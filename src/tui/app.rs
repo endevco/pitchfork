@@ -1152,9 +1152,17 @@ impl App {
     fn refresh_process_stats(&mut self) {
         PROCS.refresh_processes();
         self.process_stats.clear();
+
+        let pids: Vec<u32> = self
+            .daemons
+            .iter()
+            .filter_map(|daemon| daemon.pid)
+            .collect();
+        let stats_by_pid = PROCS.get_batch_tree_stats_map(&pids);
+
         for daemon in &self.daemons {
             if let Some(pid) = daemon.pid
-                && let Some(stats) = PROCS.get_stats(pid)
+                && let Some(stats) = stats_by_pid.get(&pid).copied()
             {
                 self.process_stats.insert(pid, stats);
                 // Record history for this daemon
