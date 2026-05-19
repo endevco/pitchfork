@@ -379,12 +379,7 @@ impl Supervisor {
                     // Update last_cron_triggered to prevent re-triggering the same event
                     {
                         let mut state_file = self.state_file.lock().await;
-                        if let Some(d) = state_file.daemons.get_mut(&id) {
-                            d.last_cron_triggered = Some(now);
-                        }
-                        if let Err(e) = state_file.write() {
-                            error!("failed to update cron trigger time: {e}");
-                        }
+                        state_file.set_last_cron_triggered(&id, now);
                     }
 
                     let should_run = match retrigger {
